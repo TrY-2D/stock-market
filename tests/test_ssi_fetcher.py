@@ -1,20 +1,32 @@
-import tempfile
 import shutil
+import tempfile
+import sys
 from pathlib import Path
+
+# Add project root to sys.path
+sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
+
 import pandas as pd
 import pytest
 
 from nautilus_trader.model.currencies import Currency
+from nautilus_trader.model.data import Bar, BarType
+from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.instruments import Equity
+from nautilus_trader.model.instruments import CurrencyPair, Equity
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
+from src.data_pipeline.ssi.fetcher import SSIFetcher, _parse_ssi_date
 from src.data_pipeline.ssi.models import (
     CompanyListingInfo,
     Dividend,
     calculate_price_increment,
 )
-from src.data_pipeline.ssi.fetcher import SSIFetcher, _parse_ssi_date
+
+
+# =============================================================================
+# 1. UNIT TESTS (Offline / Fast Verification)
+# =============================================================================
 
 
 def test_calculate_price_increment():
@@ -39,6 +51,27 @@ def test_parse_ssi_date():
     assert _parse_ssi_date("23/07/2026") == "2026-07-23"
     assert _parse_ssi_date(None) is None
     assert _parse_ssi_date("") is None
+
+
+def test_parse_interval_and_bar_type():
+    fetcher = SSIFetcher()
+    try:
+        assert fetcher.parse_interval("1d") == ("1d", 1, BarAggregation.DAY)
+        assert fetcher.parse_interval("D") == ("1d", 1, BarAggregation.DAY)
+        assert fetcher.parse_interval("15m") == ("15m", 15, BarAggregation.MINUTE)
+        assert fetcher.parse_interval("15") == ("15m", 15, BarAggregation.MINUTE)
+        assert fetcher.parse_interval("1h") == ("1h", 1, BarAggregation.HOUR)
+        assert fetcher.parse_interval("1w") == ("1w", 1, BarAggregation.WEEK)
+        assert fetcher.parse_interval("1M") == ("1M", 1, BarAggregation.MONTH)
+
+        bar_type = fetcher.get_bar_type("HPG", interval="1d", venue="HOSE")
+        assert isinstance(bar_type, BarType)
+        assert str(bar_type) == "HPG.HOSE-1-DAY-LAST-EXTERNAL"
+
+        with pytest.raises(ValueError):
+            fetcher.parse_interval("invalid_interval")
+    finally:
+        fetcher.close()
 
 
 def test_company_listing_info_to_equity():
@@ -75,10 +108,66 @@ def test_company_listing_info_to_equity():
     assert eq.info["issue_shares"] == 8355675094.0
 
 
-def test_dividend_model_and_catalog():
+def test_create_currency_pair_and_instrument():
+    fetcher = SSIFetcher()
+    try:
+        fx = fetcher.create_currency_pair("USD/VND", venue="SIM")
+        assert isinstance(fx, CurrencyPair)
+        assert str(fx.id) == "USD/VND.SIM"
+
+        eq = fetcher.create_equity("FPT", venue="HOSE", current_price=130000.0, fetch_profile=False)
+        assert isinstance(eq, Equity)
+        assert str(eq.id) == "FPT.HOSE"
+        assert float(eq.price_increment) == 100.0
+    finally:
+        fetcher.close()
+
+
+def test_clean_dataframe_and_df_to_bars():
+    fetcher = SSIFetcher()
+    try:
+        # Raw data with unsorted dates, duplicates, and slightly inverted high/low
+        raw_df = pd.DataFrame({
+            "datetime": [
+                "2025-01-03T00:00:00Z",
+                "2025-01-02T00:00:00Z",
+                "2025-01-02T00:00:00Z",  # Duplicate timestamp
+            ],
+            "open": [28000.0, 27500.0, 27600.0],
+            "high": [27900.0, 28000.0, 28100.0],  # Row 0 has high < open (should auto-correct to 28500)
+            "low": [28200.0, 27000.0, 27200.0],   # Row 0 has low > open (should auto-correct to 28000)
+            "close": [28500.0, 27800.0, 27900.0],
+            "volume": [1500000, 1200000, 1300000],
+        })
+
+        cleaned = fetcher.clean_dataframe(raw_df)
+        assert len(cleaned) == 2
+        assert isinstance(cleaned.index, pd.DatetimeIndex)
+        assert cleaned.index.is_monotonic_increasing
+        # Verify OHLC boundary correction on 2025-01-03 row
+        row_jan3 = cleaned.iloc[1]
+        assert row_jan3["high"] == 28500.0
+        assert row_jan3["low"] == 28000.0
+
+        # Convert to Nautilus Bars
+        bar_type = fetcher.get_bar_type("HPG", interval="1d", venue="HOSE")
+        bars = fetcher.df_to_bars(cleaned, bar_type=bar_type)
+        assert len(bars) == 2
+        assert all(isinstance(b, Bar) for b in bars)
+        assert bars[0].ts_event < bars[1].ts_event
+        assert float(bars[1].close) == 28500.0
+        assert float(bars[1].volume) == 1500000.0
+    finally:
+        fetcher.close()
+
+
+def test_dividend_and_bars_catalog_persistence():
     temp_dir = tempfile.mkdtemp()
+    fetcher = SSIFetcher(catalog_path=temp_dir)
     try:
         cat = ParquetDataCatalog(temp_dir)
+        eq = fetcher.create_equity("VCB", venue="HOSE", current_price=57000.0, fetch_profile=False)
+
         d1 = Dividend(
             instrument_id=InstrumentId.from_str("VCB.HOSE"),
             amount=450.0,
@@ -104,18 +193,44 @@ def test_dividend_model_and_catalog():
             ts_init=1608508800000000000,
         )
 
-        # Monotonic sorting order
-        cat.write_data([d2, d1])
+        sample_df = pd.DataFrame({
+            "datetime": ["2024-07-22T00:00:00Z", "2024-07-23T00:00:00Z"],
+            "open": [56000.0, 56500.0],
+            "high": [57000.0, 57500.0],
+            "low": [55800.0, 56200.0],
+            "close": [56500.0, 57200.0],
+            "volume": [2000000, 2500000],
+        })
+        btype = fetcher.get_bar_type(eq, interval="1d")
+        bars = fetcher.df_to_bars(sample_df, bar_type=btype)
 
-        queried = cat.custom_data(cls=Dividend)
-        assert len(queried) == 2
-        # Check first record data
-        first_div = queried[0].data if hasattr(queried[0], "data") else queried[0]
+        fetcher.save_to_catalog(
+            bars=bars,
+            instruments=[eq],
+            dividends=[d2, d1],
+            catalog=cat,
+        )
+
+        queried_inst = cat.instruments(instrument_ids=["VCB.HOSE"])
+        queried_divs = cat.custom_data(cls=Dividend)
+        queried_bars = cat.bars()
+
+        assert len(queried_inst) == 1
+        assert len(queried_divs) == 2
+        assert len(queried_bars) == 2
+
+        first_div = queried_divs[0].data if hasattr(queried_divs[0], "data") else queried_divs[0]
         assert first_div.amount == 1200.0
         assert first_div.fiscal_year == 2019
         assert first_div.ex_date == "2020-12-21"
     finally:
+        fetcher.close()
         shutil.rmtree(temp_dir)
+
+
+# =============================================================================
+# 2. LIVE INTEGRATION TESTS (SSI iBoard Endpoints)
+# =============================================================================
 
 
 def test_live_get_listed_companies():
@@ -162,7 +277,6 @@ def test_live_cash_dividends_and_df():
         divs = fetcher.get_cash_dividends("VCB")
         assert len(divs) > 0
         assert all(isinstance(d, Dividend) for d in divs)
-        # Check monotonic ordering
         for i in range(len(divs) - 1):
             assert divs[i].ts_event <= divs[i + 1].ts_event
 
@@ -178,17 +292,67 @@ def test_live_cash_dividends_and_df():
         fetcher.close()
 
 
+def test_live_get_ohlcv_and_bars():
+    fetcher = SSIFetcher()
+    try:
+        # 1. Full history DataFrame
+        df = fetcher.get_ohlcv("HPG", interval="1d")
+        assert not df.empty
+        assert len(df) > 1000  # HPG has been listed since 2007 (> 4,000 trading days)
+        assert isinstance(df.index, pd.DatetimeIndex)
+        assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+        # Check VND scaling (price in thousands of VND is scaled to > 1,000 VND)
+        assert df["close"].iloc[-1] > 1000.0
+        assert (df["high"] >= df["low"]).all()
+
+        # 2. Convert to Nautilus Bar objects
+        bars = fetcher.fetch_bars("HPG", exchange="HOSE", interval="1d", start_date="2024-01-01")
+        assert len(bars) > 100
+        assert all(isinstance(b, Bar) for b in bars)
+        assert str(bars[0].bar_type) == "HPG.HOSE-1-DAY-LAST-EXTERNAL"
+        for i in range(len(bars) - 1):
+            assert bars[i].ts_event < bars[i + 1].ts_event
+    except Exception as e:
+        pytest.skip(f"Live SSI OHLCV call failed: {e}")
+    finally:
+        fetcher.close()
+
+
+def test_live_fetch_all_ohlcv_batch():
+    fetcher = SSIFetcher()
+    try:
+        df_batch = fetcher.fetch_all_ohlcv(
+            symbols=["VCB", "ACB"],
+            interval="1d",
+            start_date="2025-01-01",
+            delay_seconds=0.05,
+        )
+        assert not df_batch.empty
+        assert set(df_batch["symbol"].unique()) == {"VCB", "ACB"}
+        assert "open" in df_batch.columns
+        assert "close" in df_batch.columns
+    except Exception as e:
+        pytest.skip(f"Live SSI batch OHLCV call failed: {e}")
+    finally:
+        fetcher.close()
+
+
 def test_live_fetch_and_catalog():
     fetcher = SSIFetcher()
     temp_dir = tempfile.mkdtemp()
     try:
-        equities, dividends = fetcher.fetch_and_catalog(
+        equities, dividends, bars = fetcher.fetch_and_catalog(
             symbols="VCB",
+            interval="1d",
+            include_bars=True,
+            include_dividends=True,
+            start_date="2024-01-01",
             catalog_path=temp_dir,
         )
         assert len(equities) == 1
         assert str(equities[0].id) == "VCB.HOSE"
         assert len(dividends) > 0
+        assert len(bars) > 0
 
         # Query back from Nautilus ParquetDataCatalog
         cat = ParquetDataCatalog(temp_dir)
@@ -198,6 +362,9 @@ def test_live_fetch_and_catalog():
 
         queried_dividends = cat.custom_data(cls=Dividend)
         assert len(queried_dividends) == len(dividends)
+
+        queried_bars = cat.bars()
+        assert len(queried_bars) == len(bars)
     except Exception as e:
         pytest.skip(f"Live SSI fetch_and_catalog failed: {e}")
     finally:

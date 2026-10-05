@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Final
 
-# Base URLs
-IBOARD_QUERY_BASE_URL: Final[str] = "https://iboard-query.ssi.com.vn"
-IBOARD_API_BASE_URL: Final[str] = "https://iboard-api.ssi.com.vn"
+# Base URLs (Tách chuỗi giao thức để tránh lỗi tự chèn Markdown link khi copy)
+IBOARD_QUERY_BASE_URL: Final[str] = "https://" + "iboard-query.ssi.com.vn"
+IBOARD_API_BASE_URL: Final[str] = "https://" + "iboard-api.ssi.com.vn"
 
 # Endpoints
 STOCK_INFO_ENDPOINT: Final[str] = "/stock/stock-info"
@@ -13,6 +13,7 @@ CAP_AND_DIVIDEND_ENDPOINT: Final[str] = "/statistics/company/ssmi/cap-and-divide
 CORPORATE_ACTIONS_ENDPOINT: Final[str] = "/statistics/company/ssmi/corporate-actions"
 FINANCE_INDICATOR_ENDPOINT: Final[str] = "/statistics/company/ssmi/finance-indicator"
 SECTORS_DATA_ENDPOINT: Final[str] = "/statistics/company/sectors-data"
+CHARTS_HISTORY_ENDPOINT: Final[str] = "/statistics/charts/history"
 
 # Networking defaults
 DEFAULT_TIMEOUT: Final[float] = 10.0
@@ -29,7 +30,23 @@ DEFAULT_USER_AGENT: Final[str] = (
 DEFAULT_HEADERS: Final[dict[str, str]] = {
     "User-Agent": DEFAULT_USER_AGENT,
     "Accept": "application/json",
+    "Referer": "https://" + "iboard.ssi.com.vn/",
+    "Origin": "https://" + "iboard.ssi.com.vn",
 }
+
+# Danh sách các chỉ số thị trường (không nhân 1,000 khi quy đổi đơn vị VND)
+MARKET_INDICES: Final[frozenset[str]] = frozenset({
+    "VNINDEX",
+    "VN30",
+    "HNXINDEX",
+    "HNX30",
+    "UPCOMINDEX",
+    "VN100",
+    "VNALLSHARE",
+    "VNDIAMOND",
+    "VNFINLEAD",
+    "VNFINSELECT",
+})
 
 # Industry mapping for Vietnamese markets
 INDUSTRY_MAP: Final[dict[str, str]] = {
