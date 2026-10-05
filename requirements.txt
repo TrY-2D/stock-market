@@ -2,3 +2,5 @@ pandas
 numpy
 nautilus-trader
 requests
+yfinance
+matplotlib
