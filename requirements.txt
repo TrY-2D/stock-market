@@ -1,0 +1,5 @@
+pandas
+numpy
+nautilus-trader
+requests
+# vnquantpy
