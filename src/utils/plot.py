@@ -12,6 +12,7 @@ def plot_series_groups(
     *series_groups: Sequence[Sequence[pd.Series] | pd.Series],
     figsize: tuple[float, float] = (10, 6),
     x: pd.Index | pd.Series | None = None,
+    save_path: str | Path | None = None,
 ) -> None:
     """Plot groups of Series in vertically stacked subplots.
 
@@ -27,6 +28,8 @@ def plot_series_groups(
         Figure dimensions ``(width, height)`` in inches.
     x : pd.Index | pd.Series | None
         Shared x-axis values. Defaults to each Series' own index.
+    save_path : str | Path | None
+        Optional path to save figure file (e.g. 'demo_plot.png').
 
     Raises
     ------
@@ -71,15 +74,17 @@ def plot_series_groups(
                     label=label,
                 )
 
-                # s = series.index.to_series()
-                current_ax.hlines(
-                    series.values[-1], 
-                    x.iloc[0],  
-                    x.iloc[-1],
-                    colors=color, 
-                    linestyles='dashed',
-                    label="Current " + label, 
+                x_axis = x if x is not None else series.index
+                x_start = x_axis.iloc[0] if hasattr(x_axis, "iloc") else x_axis[0]
+                x_end = x_axis.iloc[-1] if hasattr(x_axis, "iloc") else x_axis[-1]
 
+                current_ax.hlines(
+                    series.values[-1],
+                    x_start,
+                    x_end,
+                    colors=color,
+                    linestyles='dashed',
+                    label="Current " + label,
                 )
                 current_ax.tick_params(axis="y", colors=color)
 
@@ -89,5 +94,6 @@ def plot_series_groups(
         if lines:
             ax.legend(lines, labels, loc="upper left")
 
-    fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight")
     plt.show()

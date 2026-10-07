@@ -100,18 +100,18 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 5. Lấy toàn bộ lịch sử OHLCV (DataFrame & Nautilus Bar)
         # ---------------------------------------------------------------------
-        print("\n[5] Lấy toàn bộ lịch sử OHLCV của 'HPG' (từ khi niêm yết đến nay)...")
-        df_hpg = fetcher.get_ohlcv("HPG", interval="1d")
-        print(f"  Tổng số phiên giao dịch của HPG: {len(df_hpg):,} phiên")
-        if not df_hpg.empty:
-            print(f"  Từ ngày: {df_hpg.index.min()} -> Đến ngày: {df_hpg.index.max()}")
+        print("\n[5] Lấy toàn bộ lịch sử OHLCV của 'FPT' (từ khi niêm yết đến nay)...")
+        df_fpt = fetcher.get_ohlcv("FPT", interval="1d")
+        print(f"  Tổng số phiên giao dịch của FPT: {len(df_fpt):,} phiên")
+        if not df_fpt.empty:
+            print(f"  Từ ngày: {df_fpt.index.min()} -> Đến ngày: {df_fpt.index.max()}")
             print("  5 phiên gần nhất:")
-            print(df_hpg.tail(5))
+            print(df_fpt.tail(5))
 
-        hpg_bars = fetcher.fetch_bars("HPG", exchange="HOSE", interval="1d")
-        print(f"  Chuyển đổi sang Nautilus Bar thành công: {len(hpg_bars):,} bars")
-        if hpg_bars:
-            print(f"  Mẫu Bar cuối cùng: {hpg_bars[-1]}")
+        fpt_bars = fetcher.fetch_bars("FPT", exchange="HOSE", interval="1d")
+        print(f"  Chuyển đổi sang Nautilus Bar thành công: {len(fpt_bars):,} bars")
+        if fpt_bars:
+            print(f"  Mẫu Bar cuối cùng: {fpt_bars[-1]}")
 
         # ---------------------------------------------------------------------
         # 6. Lấy lịch sử OHLCV hàng loạt (Batch OHLCV)
