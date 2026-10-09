@@ -81,6 +81,8 @@ class DirectionalMovementIndex(Indicator):
         self.half_life: float = 0.0
         self._trend_initialized: bool = False
         self._trend_history: deque[float] = deque(maxlen=50)
+        self.pending_buy_reversal: bool = False
+        self.pending_sell_reversal: bool = False
         # Internal Wilder smoothing variables
         self._prev_high: float | None = None
         self._prev_low: float | None = None
@@ -124,6 +126,15 @@ class DirectionalMovementIndex(Indicator):
         """Absolute value of adaptive trend score: |T_t|."""
         return abs(self.trend_score)
 
+    @property
+    def prev_trend_strength(self) -> float:
+        """Absolute value of previous adaptive trend score: |T_{t-1}|."""
+        return abs(self.prev_trend_score)
+
+    @property
+    def is_trend_strength_decreasing(self) -> bool:
+        """True if trend strength has started decreasing: |T_t| < |T_{t-1}|."""
+        return self.trend_strength < self.prev_trend_strength
     def compute_alpha(self, adx_val: float, mode: str | None = None) -> tuple[float, float]:
         """
         Computes (alpha, half_life) from ADX according to the configured mode.
@@ -347,6 +358,88 @@ class DirectionalMovementIndex(Indicator):
     def is_trend_bearish_cross(self) -> bool:
         """Adaptive trend score T_t cắt xuống dưới 0 (chuyển từ bullish sang bearish)."""
         return (self.prev_trend_score >= 0.0) and (self.trend_score < 0.0)
+
+    # -------------------------------------------------------------
+    # Reversal Signal Trigger Conditions (Delay when trend_strength > 30)
+    # -------------------------------------------------------------
+
+    def is_raw_buy_reversal(self) -> bool:
+        """Tín hiệu đảo chiều tăng thô từ DMI (bỏ cooling)."""
+        return (
+            self.is_minus_di_crossed_below_adx()
+            or self.is_plus_di_crossed_above_minus_di()
+            or self.is_plus_di_crossed_above_adx()
+            or self.is_trend_bullish_cross()
+        )
+
+    def is_raw_sell_reversal(self) -> bool:
+        """Tín hiệu đảo chiều giảm thô từ DMI (bỏ cooling)."""
+        return (
+            self.is_plus_di_crossed_below_adx()
+            or self.is_minus_di_crossed_above_plus_di()
+            or self.is_minus_di_crossed_above_adx()
+            or self.is_trend_bearish_cross()
+        )
+
+    def check_buy_reversal_signal(self, candle_bullish: bool = False) -> bool:
+        """Kiểm tra tín hiệu đảo chiều mua.
+
+        - Bỏ cooling signal.
+        - Không yêu cầu trend_strength >= 10.
+        - Trường hợp trend_strength > 30: tín hiệu đảo chiều bị delay, chỉ kích hoạt khi trend_strength bắt đầu giảm.
+        - Trường hợp trend_strength <= 30: kích hoạt ngay (không delay).
+        """
+        raw_signal = self.is_raw_buy_reversal() or candle_bullish
+        ts = self.trend_strength
+        ts_dec = self.is_trend_strength_decreasing
+
+        if raw_signal:
+            if ts > 30.0:
+                if ts_dec:
+                    self.pending_buy_reversal = False
+                    return True
+                else:
+                    self.pending_buy_reversal = True
+                    return False
+            else:
+                self.pending_buy_reversal = False
+                return True
+        elif self.pending_buy_reversal:
+            if (ts > 30.0 and ts_dec) or (ts <= 30.0):
+                self.pending_buy_reversal = False
+                return True
+
+        return False
+
+    def check_sell_reversal_signal(self, candle_bearish: bool = False) -> bool:
+        """Kiểm tra tín hiệu đảo chiều bán.
+
+        - Bỏ cooling signal.
+        - Không yêu cầu trend_strength >= 10.
+        - Trường hợp trend_strength > 30: tín hiệu đảo chiều bị delay, chỉ kích hoạt khi trend_strength bắt đầu giảm.
+        - Trường hợp trend_strength <= 30: kích hoạt ngay (không delay).
+        """
+        raw_signal = self.is_raw_sell_reversal() or candle_bearish
+        ts = self.trend_strength
+        ts_dec = self.is_trend_strength_decreasing
+
+        if raw_signal:
+            if ts > 30.0:
+                if ts_dec:
+                    self.pending_sell_reversal = False
+                    return True
+                else:
+                    self.pending_sell_reversal = True
+                    return False
+            else:
+                self.pending_sell_reversal = False
+                return True
+        elif self.pending_sell_reversal:
+            if (ts > 30.0 and ts_dec) or (ts <= 30.0):
+                self.pending_sell_reversal = False
+                return True
+
+        return False
     def _reset(self) -> None:
         self.plus_di = 0.0
         self.minus_di = 0.0
@@ -371,3 +464,5 @@ class DirectionalMovementIndex(Indicator):
         self.half_life = 0.0
         self._trend_initialized = False
         self._trend_history.clear()
+        self.pending_buy_reversal = False
+        self.pending_sell_reversal = False

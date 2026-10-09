@@ -88,3 +88,50 @@ def test_dmi_reset():
     assert dmi.half_life == 0.0
     assert dmi.trend_alpha == 0.0
     assert len(dmi._trend_history) == 0
+
+
+def test_dmi_reversal_signal_delay_when_overheated():
+    dmi = DirectionalMovementIndex(period=5, adx_period=5)
+
+    # Case 1: trend_strength <= 30 -> Kích hoạt ngay lập tức
+    dmi.trend_score = 15.0
+    dmi.prev_trend_score = 12.0
+    assert dmi.trend_strength == 15.0
+    assert not dmi.is_trend_strength_decreasing
+    # Có tín hiệu nến đảo chiều hoặc DMI raw
+    assert dmi.check_buy_reversal_signal(candle_bullish=True)
+    assert not dmi.pending_buy_reversal
+
+    # Case 2: trend_strength > 30 và đang tăng -> Bị DELAY
+    dmi.trend_score = 35.0
+    dmi.prev_trend_score = 32.0
+    assert dmi.trend_strength > 30.0
+    assert not dmi.is_trend_strength_decreasing
+    # Có tín hiệu nến đảo chiều: bị hoãn lại
+    assert not dmi.check_buy_reversal_signal(candle_bullish=True)
+    assert dmi.pending_buy_reversal
+
+    # Bar tiếp theo: trend_strength vẫn > 30 nhưng BẮT ĐẦU GIẢM (35 -> 33)
+    dmi.prev_trend_score = 35.0
+    dmi.trend_score = 33.0
+    assert dmi.trend_strength > 30.0
+    assert dmi.is_trend_strength_decreasing
+    # Tín hiệu bị delay trước đó được kích hoạt!
+    assert dmi.check_buy_reversal_signal(candle_bullish=False)
+    assert not dmi.pending_buy_reversal
+
+    # Case 3: Bán đảo chiều khi trend_strength > 30 và đang tăng -> Delay, giảm -> Kích hoạt
+    dmi.trend_score = -40.0
+    dmi.prev_trend_score = -35.0
+    assert dmi.trend_strength == 40.0
+    assert not dmi.is_trend_strength_decreasing
+    assert not dmi.check_sell_reversal_signal(candle_bearish=True)
+    assert dmi.pending_sell_reversal
+
+    # Bar tiếp theo: trend_strength bắt đầu giảm (40 -> 38)
+    dmi.prev_trend_score = -40.0
+    dmi.trend_score = -38.0
+    assert dmi.trend_strength == 38.0
+    assert dmi.is_trend_strength_decreasing
+    assert dmi.check_sell_reversal_signal(candle_bearish=False)
+    assert not dmi.pending_sell_reversal

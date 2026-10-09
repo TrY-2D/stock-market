@@ -145,9 +145,9 @@ def demo_rolling_statistics(bars: list[Bar], df: pd.DataFrame) -> None:
     print("  * Baseline           : SMA(price) theo cửa sổ trượt (window=20).")
     print("  * Z-Score            : (price - SMA) / STD (đo độ lệch chuẩn hóa).")
     print("  * G_SMA (Velocity)   : (SMA_t - SMA_{t-1}) / price * scale_factor (tốc độ xu hướng).")
-    print("  * Premium Growth     : G_SMA.")
+    print("  * Premium Growth     : G_SMA (tốc độ xu hướng SMA).")
     print("  * Premium Discount   : (SMA - price) / price (biên độ hồi quy về giá trị trung bình).")
-    print("  * Premium Tổng       : Premium Growth + Premium Discount.")
+    print("  * Premium Tổng       : Premium Discount ((SMA - price) / price).")
     print("  * Strategic Targets  : Target(P) = SMA + P * STD với các mức độ tin cậy P.")
 
     strategic_levels = (2.0, 1.144, 0.472, 0.0, -0.472, -1.144, -2.0)
@@ -175,7 +175,7 @@ def demo_rolling_statistics(bars: list[Bar], df: pd.DataFrame) -> None:
     print(f"  * Phân rã Premium:")
     print(f"      + Tăng trưởng (Growth)      : {sma.premium_growth:+.4%}")
     print(f"      + Chiết khấu (Discount)     : {sma.premium_discount:+.4%}")
-    print(f"      + Tổng Premium kỳ vọng      : {sma.premium:+.4%}")
+    print(f"      + Tổng Premium kỳ vọng      : {sma.premium:+.4%} (bằng Discount)")
     print(f"  * Độ bất định mô hình (STD/P)   : {sma.model_uncertainty:.4%}")
     print(f"  * Xác suất Mua/Bán (Sigmoid)    : BP={sma.bp:.2%} | SP={sma.sp:.2%}")
 
@@ -341,48 +341,31 @@ def demo_directional_movement_index(bars: list[Bar], df: pd.DataFrame) -> None:
                 "t_score": dmi.trend_score, "adx": dmi.adx
             })
 
-        # Kiểm tra Buy Tranches
-        if dmi.is_minus_di_cooling(bars_count=2):
+        # Kiểm tra Tín hiệu Đảo chiều DMI (Bỏ cooling; Delay khi trend_strength > 30)
+        if dmi.check_buy_reversal_signal():
             tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "BUY - Đợt 1",
-                "reason": "-DI hạ nhiệt liên tiếp", "price": close_p, "adx": dmi.adx
+                "bar": idx + 1, "date": bar_date, "type": "BUY REVERSAL",
+                "reason": f"DMI Buy Signal (TS={dmi.trend_strength:.1f}, Delay={dmi.trend_strength > 30})",
+                "price": close_p, "adx": dmi.adx
             })
-        if dmi.is_minus_di_crossed_below_adx():
+        elif dmi.pending_buy_reversal:
             tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "BUY - Đợt 2",
-                "reason": "-DI cắt xuống dưới ADX (sau đỉnh)", "price": close_p, "adx": dmi.adx
-            })
-        if dmi.is_plus_di_crossed_above_minus_di():
-            tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "BUY - Đợt 3",
-                "reason": "+DI cắt lên trên -DI (Golden Cross)", "price": close_p, "adx": dmi.adx
-            })
-        if dmi.is_plus_di_crossed_above_adx():
-            tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "BUY - Đợt 4",
-                "reason": "+DI cắt lên trên ADX (Đà tăng bùng nổ)", "price": close_p, "adx": dmi.adx
+                "bar": idx + 1, "date": bar_date, "type": "BUY (DELAYED)",
+                "reason": f"Chờ TS giảm (TS={dmi.trend_strength:.1f} > 30)",
+                "price": close_p, "adx": dmi.adx
             })
 
-        # Kiểm tra Sell Tranches
-        if dmi.is_plus_di_cooling(bars_count=2):
+        if dmi.check_sell_reversal_signal():
             tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "SELL - Đợt 1",
-                "reason": "+DI hạ nhiệt liên tiếp", "price": close_p, "adx": dmi.adx
+                "bar": idx + 1, "date": bar_date, "type": "SELL REVERSAL",
+                "reason": f"DMI Sell Signal (TS={dmi.trend_strength:.1f}, Delay={dmi.trend_strength > 30})",
+                "price": close_p, "adx": dmi.adx
             })
-        if dmi.is_plus_di_crossed_below_adx():
+        elif dmi.pending_sell_reversal:
             tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "SELL - Đợt 2",
-                "reason": "+DI cắt xuống dưới ADX (sau đỉnh)", "price": close_p, "adx": dmi.adx
-            })
-        if dmi.is_minus_di_crossed_above_plus_di():
-            tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "SELL - Đợt 3",
-                "reason": "-DI cắt lên trên +DI (Death Cross)", "price": close_p, "adx": dmi.adx
-            })
-        if dmi.is_minus_di_crossed_above_adx():
-            tranche_events.append({
-                "bar": idx + 1, "date": bar_date, "type": "SELL - Đợt 4",
-                "reason": "-DI cắt lên trên ADX (Đà giảm bùng nổ)", "price": close_p, "adx": dmi.adx
+                "bar": idx + 1, "date": bar_date, "type": "SELL (DELAYED)",
+                "reason": f"Chờ TS giảm (TS={dmi.trend_strength:.1f} > 30)",
+                "price": close_p, "adx": dmi.adx
             })
 
     print(f"\n[3.3] Trạng thái DMI & Adaptive Trend Filter tại nến cuối cùng:")
@@ -525,17 +508,16 @@ def demo_integrated_strategy(bars: list[Bar], df: pd.DataFrame) -> None:
         action = "HOLD"
         reason = "Chờ tín hiệu rõ ràng"
 
-        # Điều kiện MUA: DMI kích hoạt Buy Tranche HOẶC Giá dưới biên chiết khấu sâu (z_score < -1.5)
-        if dmi.is_plus_di_crossed_above_minus_di() or dmi.is_minus_di_crossed_below_adx():
-            action = "BUY (Tranche)"
-            reason = f"DMI Buy Tranche | ADX={dmi.adx:.1f}"
+        # Điều kiện MUA: Tín hiệu đảo chiều DMI (đã kiểm tra quy tắc delay TS > 30)
+        if dmi.check_buy_reversal_signal():
+            action = "BUY (Reversal)"
+            reason = f"DMI Buy Reversal | TS={dmi.trend_strength:.1f}"
         elif sma.z_score < -1.144 and lrc.z_reg < -1.0:
             action = "BUY (Reversion)"
             reason = f"Quá bán sâu (z={sma.z_score:.2f}, z_reg={lrc.z_reg:.2f})"
-        elif dmi.is_minus_di_crossed_above_plus_di() or (dmi.adx_peak_detected and sma.z_score > 1.5):
+        elif dmi.check_sell_reversal_signal() or (dmi.adx_peak_detected and sma.z_score > 1.5):
             action = "TAKE PROFIT / SELL"
-            reason = f"Quá mua & Đảo chiều (z={sma.z_score:.2f})"
-
+            reason = f"Đảo chiều bán | TS={dmi.trend_strength:.1f}"
         decisions.append({
             "date": str(row["date"]),
             "price": p_close,

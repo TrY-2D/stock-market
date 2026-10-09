@@ -7,9 +7,19 @@ import math
 import numpy as np
 
 from nautilus_trader.indicators.base import Indicator
-from nautilus_trader.model.data import Bar
 
+_T_STATS_CACHE: dict[int, tuple[np.ndarray, float, np.ndarray, float]] = {}
 
+def _get_t_stats(n: int) -> tuple[np.ndarray, float, np.ndarray, float]:
+    cached = _T_STATS_CACHE.get(n)
+    if cached is None:
+        t = np.arange(n, dtype=np.float64)
+        t_mean = float((n - 1) / 2.0)
+        t_dev = t - t_mean
+        var_t = float(np.sum(t_dev * t_dev))
+        cached = (t, t_mean, t_dev, var_t)
+        _T_STATS_CACHE[n] = cached
+    return cached
 class LinearRegressionChannel(Indicator):
     """
     Linear Regression Channel with sample-size shrinkage.
@@ -79,6 +89,7 @@ class LinearRegressionChannel(Indicator):
         beta: float | None = None,
         rmse: float | None = None,
         k: float = 10.0,
+        expanding: bool = False,
     ):
         super().__init__(
             [window if (window is not None and window > 0) else 0]
@@ -86,6 +97,8 @@ class LinearRegressionChannel(Indicator):
 
         self.window = window or 2
         self.strategic_levels = tuple(strategic_levels)
+        self.expanding = expanding or window is None or window <= 0
+
 
         # ------------------------------------------------------------------
         # Configuration
@@ -108,17 +121,12 @@ class LinearRegressionChannel(Indicator):
         # Price buffer
         # ------------------------------------------------------------------
 
-        if window is None or window <= 0:
-            # Expanding window.
-            self._buffer: deque[float] = deque()
-            self.expanding = True
+        if self.expanding:
+            self._buffer: deque[float] = deque(maxlen=300)
         else:
-            # Rolling window.
             self._buffer = deque(maxlen=self.window)
-            self.expanding = False
 
         self.current_t: int = 0
-
         # ------------------------------------------------------------------
         # Regression state
         # ------------------------------------------------------------------
@@ -299,7 +307,6 @@ class LinearRegressionChannel(Indicator):
             self._buffer,
             dtype=np.float64,
         )
-
         n = len(prices)
 
         # ------------------------------------------------------------------
@@ -328,25 +335,13 @@ class LinearRegressionChannel(Indicator):
         # ------------------------------------------------------------------
         # Independent variable
         # ------------------------------------------------------------------
-
-        t = np.arange(
-            n,
-            dtype=np.float64,
-        )
-
-        t_mean = float(np.mean(t))
+        t, t_mean, t_dev, var_t = _get_t_stats(n)
         p_mean = float(np.mean(prices))
-
-        t_dev = t - t_mean
         p_dev = prices - p_mean
 
         # ------------------------------------------------------------------
         # OLS
         # ------------------------------------------------------------------
-
-        var_t = float(
-            np.sum(t_dev * t_dev)
-        )
 
         cov_tp = float(
             np.sum(t_dev * p_dev)

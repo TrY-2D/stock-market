@@ -38,8 +38,7 @@ class RollingStatistics(Indicator):
         (SMA - price) / price
 
     premium:
-        G_SMA + premium_discount
-
+        premium_discount (Mean-reversion discount component)
     model_uncertainty:
         STD / price
 
@@ -124,7 +123,8 @@ class RollingStatistics(Indicator):
             if self.expanding
             else deque(maxlen=self.window)
         )
-
+        self._running_sum: float = 0.0
+        self._running_sum_sq: float = 0.0
         # ------------------------------------------------------------------
         # SMA statistics
         # ------------------------------------------------------------------
@@ -239,54 +239,36 @@ class RollingStatistics(Indicator):
         # Price array
         # ------------------------------------------------------------------
 
-        arr = np.asarray(
-            self._buffer,
-            dtype=np.float64,
-        )
-
-        # ------------------------------------------------------------------
-        # Previous SMA
-        #
-        # Store the previous value before updating the current SMA.
-        # ------------------------------------------------------------------
-
         previous_mean = self.mean
 
-        # ------------------------------------------------------------------
-        # SMA
-        # ------------------------------------------------------------------
+        if self.expanding:
+            self._running_sum += price
+            self._running_sum_sq += price * price
+            self.mean = float(self._running_sum / n)
+            variance = max(float(self._running_sum_sq / n - self.mean * self.mean), 0.0)
+            self.std = max(float(math.sqrt(variance)), 1e-8)
+        else:
+            arr = np.asarray(
+                self._buffer,
+                dtype=np.float64,
+            )
+            self.mean = float(
+                np.mean(arr)
+            )
+            self.std = max(
+                float(np.std(arr, ddof=0)),
+                1e-8,
+            )
 
-        self.mean = float(
-            np.mean(arr)
-        )
-
-        self.previous_mean = (
-            previous_mean
-        )
+        self.previous_mean = previous_mean
 
         # ------------------------------------------------------------------
         # SMA difference
         # ------------------------------------------------------------------
-
         self.sma_diff = (
-            self.mean
-            - self.previous_mean
-        )
-
-        # ------------------------------------------------------------------
-        # Standard deviation
-        # ------------------------------------------------------------------
-
-        self.std = float(
-            np.std(
-                arr,
-                ddof=0,
-            )
-        )
-
-        self.std = max(
-            self.std,
-            1e-8,
+            0.0
+            if previous_mean == 0.0
+            else self.mean - self.previous_mean
         )
 
         # ------------------------------------------------------------------
@@ -387,7 +369,7 @@ class RollingStatistics(Indicator):
                 = (SMA - price) / price
 
             premium
-                = premium_growth + premium_discount
+                = premium_discount
         """
 
         price_safe = max(
@@ -414,12 +396,12 @@ class RollingStatistics(Indicator):
         # ------------------------------------------------------------------
         # Combined premium
         # ------------------------------------------------------------------
+        # Premium (Excluding sma_growth)
+        # ------------------------------------------------------------------
 
         self.premium = (
-            self.premium_growth
-            + self.premium_discount
+            self.premium_discount
         )
-
     # ======================================================================
     # Model uncertainty
     # ======================================================================
@@ -594,6 +576,8 @@ class RollingStatistics(Indicator):
         self.sma_growth = 0.0
 
         # Premium
+        self._running_sum = 0.0
+        self._running_sum_sq = 0.0
         self.premium_growth = 0.0
         self.premium_discount = 0.0
         self.premium = 0.0

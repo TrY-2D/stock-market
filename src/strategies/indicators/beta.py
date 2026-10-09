@@ -369,16 +369,19 @@ class MultivariateLinearRegression(Indicator):
         # Calculate percentage changes.
         # --------------------------------------------------------------
 
-        target_change = (
-            target_price
-            / self._previous_target_price
-            - 1.0
+        target_change = float(
+            np.clip(
+                target_price / self._previous_target_price - 1.0,
+                -0.95,
+                10.0,
+            )
         )
 
-        feature_changes = (
-            feature_prices_array
-            / self._previous_feature_prices
-            - 1.0
+        denom = np.where(np.abs(self._previous_feature_prices) > 1e-6, self._previous_feature_prices, 1.0)
+        feature_changes = np.clip(
+            feature_prices_array / denom - 1.0,
+            -0.95,
+            10.0,
         )
         # Update previous prices immediately.
         self._previous_target_price = (
@@ -484,21 +487,25 @@ class MultivariateLinearRegression(Indicator):
 
             MSE + L2 regularization
         """
+        if self.expanding and len(self._target_changes) > 300:
+            y = np.asarray(list(self._target_changes)[-300:], dtype=np.float64)
+            features = np.asarray(list(self._feature_changes)[-300:], dtype=np.float64)
+            epochs_to_run = min(self.epochs, 3)
+        else:
+            y = np.asarray(
+                self._target_changes,
+                dtype=np.float64,
+            )
+            features = np.asarray(
+                self._feature_changes,
+                dtype=np.float64,
+            )
+            epochs_to_run = self.epochs
 
-        y = np.asarray(
-            self._target_changes,
-            dtype=np.float64,
-        )
-
-        features = np.asarray(
-            self._feature_changes,
-            dtype=np.float64,
-        )
         n = len(y)
 
         if n == 0:
             return
-
 
 
         # Add intercept.
@@ -518,16 +525,18 @@ class MultivariateLinearRegression(Indicator):
 
         beta = self.beta.copy()
 
-        for _ in range(self.epochs):
+        for _ in range(epochs_to_run):
             prediction = X @ beta
 
             error = (
                 prediction - y
             )
 
-            gradient = (
-                X.T @ error
-            ) / n
+            gradient = np.clip(
+                (X.T @ error) / n,
+                -10.0,
+                10.0,
+            )
 
             # L2 regularization on feature
             # coefficients only.
@@ -645,17 +654,18 @@ class MultivariateLinearRegression(Indicator):
         """
         Calculate rolling model uncertainty and R².
         """
-
-        y = np.asarray(
-            self._target_changes,
-            dtype=np.float64,
-        )
-
-        features = np.asarray(
-            self._feature_changes,
-            dtype=np.float64,
-        )
-
+        if self.expanding and len(self._target_changes) > 300:
+            y = np.asarray(list(self._target_changes)[-300:], dtype=np.float64)
+            features = np.asarray(list(self._feature_changes)[-300:], dtype=np.float64)
+        else:
+            y = np.asarray(
+                self._target_changes,
+                dtype=np.float64,
+            )
+            features = np.asarray(
+                self._feature_changes,
+                dtype=np.float64,
+            )
         if len(y) == 0:
             return
 
