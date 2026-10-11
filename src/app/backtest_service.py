@@ -101,6 +101,13 @@ class BacktestAppService:
         # 1. Chuyển đổi nến OHLCV sang Unix timestamp seconds
         candles: list[CandleBar] = []
         p_suggest_line: list[LinePoint] = []
+        support_line: list[LinePoint] = []
+        resistance_line: list[LinePoint] = []
+        plus_di_line: list[LinePoint] = []
+        minus_di_line: list[LinePoint] = []
+        adx_line: list[LinePoint] = []
+        position_shares_line: list[LinePoint] = []
+        position_level_line: list[LinePoint] = []
         buy_thresh_line: list[LinePoint] = []
         sell_thresh_line: list[LinePoint] = []
         sma20_line: list[LinePoint] = []
@@ -111,6 +118,7 @@ class BacktestAppService:
         pt_line: list[LinePoint] = []
         div_yield_line: list[LinePoint] = []
         theses_line: list[LinePoint] = []
+        loser_ratio_line: list[LinePoint] = []
         equity_line: list[LinePoint] = []
         bench_line: list[LinePoint] = []
         drawdown_line: list[LinePoint] = []
@@ -173,10 +181,31 @@ class BacktestAppService:
                 if not math.isfinite(bench_val):
                     bench_val = req.initial_cash
 
+                sup_val = float(eq_row.get("support", b_th))
+                if not math.isfinite(sup_val):
+                    sup_val = b_th
+                res_val = float(eq_row.get("resistance", s_th))
+                if not math.isfinite(res_val):
+                    res_val = s_th
+
+                support_line.append(LinePoint(time=t_sec, value=round(sup_val, 1)))
+                resistance_line.append(LinePoint(time=t_sec, value=round(res_val, 1)))
                 p_suggest_line.append(LinePoint(time=t_sec, value=round(p_s, 1)))
                 buy_thresh_line.append(LinePoint(time=t_sec, value=round(b_th, 1)))
                 sell_thresh_line.append(LinePoint(time=t_sec, value=round(s_th, 1)))
                 exp_return_line.append(LinePoint(time=t_sec, value=round(e_ret, 2)))
+
+                p_di = float(eq_row.get("plus_di", 0.0))
+                m_di = float(eq_row.get("minus_di", 0.0))
+                adx_v = float(eq_row.get("adx", 0.0))
+                plus_di_line.append(LinePoint(time=t_sec, value=round(p_di if math.isfinite(p_di) else 0.0, 2)))
+                minus_di_line.append(LinePoint(time=t_sec, value=round(m_di if math.isfinite(m_di) else 0.0, 2)))
+                adx_line.append(LinePoint(time=t_sec, value=round(adx_v if math.isfinite(adx_v) else 0.0, 2)))
+
+                pos_s = float(eq_row.get("position_shares", eq_row.get("shares_held", 0.0)))
+                pos_l = float(eq_row.get("position_level", 0.0))
+                position_shares_line.append(LinePoint(time=t_sec, value=round(pos_s if math.isfinite(pos_s) else 0.0, 0)))
+                position_level_line.append(LinePoint(time=t_sec, value=round(pos_l if math.isfinite(pos_l) else 0.0, 0)))
 
                 pqr_val = float(eq_row.get("pqr", 0.0)) * 100.0
                 pqr_line.append(LinePoint(time=t_sec, value=round(pqr_val if math.isfinite(pqr_val) else 0.0, 2)))
@@ -194,6 +223,8 @@ class BacktestAppService:
                 div_yield_line.append(LinePoint(time=t_sec, value=round(div_val if math.isfinite(div_val) else 0.0, 2)))
 
                 theses_line.append(LinePoint(time=t_sec, value=round(th_count, 1)))
+                loser_val = float(eq_row.get("loser_ratio", 0.5)) * 100.0
+                loser_ratio_line.append(LinePoint(time=t_sec, value=round(loser_val if math.isfinite(loser_val) else 50.0, 1)))
                 equity_line.append(LinePoint(time=t_sec, value=round(nav_val, 0)))
                 bench_line.append(LinePoint(time=t_sec, value=round(bench_val, 0)))
                 if nav_val > rolling_max_nav:
@@ -241,6 +272,9 @@ class BacktestAppService:
                     theses_count=t.theses_count,
                     reason=t.reason,
                     nav=t.nav_after,
+                    level=getattr(t, "level", 1),
+                    pnl=getattr(t, "pnl", 0.0),
+                    surplus_after=getattr(t, "surplus_after", 0.0),
                 )
             )
 
@@ -269,6 +303,8 @@ class BacktestAppService:
             summary=summary,
             candles=candles,
             p_suggest=p_suggest_line,
+            support=support_line,
+            resistance=resistance_line,
             buy_threshold=buy_thresh_line,
             sell_threshold=sell_thresh_line,
             sma20=sma20_line,
@@ -279,9 +315,15 @@ class BacktestAppService:
             pt_series=pt_line,
             div_yield_series=div_yield_line,
             theses_count=theses_line,
+            loser_ratio=loser_ratio_line,
             equity_curve=equity_line,
             benchmark_curve=bench_line,
             drawdown_curve=drawdown_line,
+            plus_di=plus_di_line,
+            minus_di=minus_di_line,
+            adx=adx_line,
+            position_shares=position_shares_line,
+            position_level=position_level_line,
             markers=markers,
             trades=trades,
         )

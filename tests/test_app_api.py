@@ -48,6 +48,12 @@ def test_api_backtest_run_endpoint():
     assert len(data["candles"]) > 0
     assert "markers" in data
     assert "equity_curve" in data
+    assert "support" in data and len(data["support"]) > 0
+    assert "resistance" in data and len(data["resistance"]) > 0
+    assert "plus_di" in data and len(data["plus_di"]) > 0
+    assert "minus_di" in data and len(data["minus_di"]) > 0
+    assert "adx" in data and len(data["adx"]) > 0
+    assert "position_shares" in data and len(data["position_shares"]) > 0
     assert "trades" in data
 
 

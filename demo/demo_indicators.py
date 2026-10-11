@@ -23,6 +23,7 @@ from src.strategies.indicators import (
     LinearRegressionChannel,
     MultivariateLinearRegression,
     RollingStatistics,
+    SupportResistanceReversalIndicator,
 )
 
 logger = logging.getLogger(__name__)
@@ -542,6 +543,72 @@ def demo_integrated_strategy(bars: list[Bar], df: pd.DataFrame) -> None:
 
 
 # ==============================================================================
+# 6. Demo 6: SupportResistanceReversalIndicator (DMI, Nến, Linear, SMA)
+# ==============================================================================
+
+def demo_support_resistance_reversal(bars: list[Bar], df: pd.DataFrame) -> None:
+    """Minh họa SupportResistanceReversalIndicator: Kết hợp DMI, Nến, Linear, SMA & Vùng giá ATR."""
+    print("\n" + "=" * 78)
+    print("DEMO 6: SupportResistanceReversalIndicator (reversal.py)")
+    print("=" * 78)
+    print("Nguyên lý hoạt động:")
+    print("  1. Target points từ Linear và SMA đóng vai trò hỗ trợ & kháng cự.")
+    print("  2. Vùng hỗ trợ  = [hỗ trợ, hỗ trợ + ATR].")
+    print("  3. Vùng kháng cự = [kháng cự - ATR, kháng cự].")
+    print("  4. Đảo chiều tăng -> giảm (nến bearish hoặc DMI) tại vùng kháng cự: signal = -1, trend = -1.")
+    print("  5. Đảo chiều giảm -> tăng (nến bullish hoặc DMI) tại vùng hỗ trợ: signal = 1, trend = 1.")
+    print("  6. Không có tín hiệu: signal = 0, trend = trend cũ.")
+
+    indicator = SupportResistanceReversalIndicator(
+        linear_window=20,
+        sma_window=20,
+        dmi_period=14,
+        adx_period=14,
+        atr_period=14,
+        atr_multiplier=1.0,
+    )
+
+    events: list[dict[str, Any]] = []
+
+    for idx, bar in enumerate(bars):
+        indicator.handle_bar(bar)
+        snap = indicator.snapshot
+        if snap is not None and snap.signal != 0:
+            events.append({
+                "bar": idx + 1,
+                "date": str(df.iloc[idx]["date"]),
+                "price": snap.price,
+                "signal": snap.signal,
+                "trend": snap.trend,
+                "pattern": snap.candlestick_pattern,
+                "atr": snap.atr,
+                "reason": snap.reason,
+            })
+
+    print(f"\n[6.1] Trạng thái chỉ báo tại nến cuối cùng:")
+    print(f"  * Giá hiện tại                   : {bars[-1].close.as_double():,.1f}")
+    print(f"  * ATR hiện tại                   : {indicator.atr:.2f}")
+    print(f"  * Xu hướng hiện tại (trend)      : {'UPTREND (+1)' if indicator.is_bullish else 'DOWNTREND (-1)' if indicator.is_bearish else 'NEUTRAL (0)'}")
+    print(f"  * Tín hiệu phiên này (signal)    : {indicator.signal} ({'MUA/BULLISH' if indicator.is_buy_signal else 'BÁN/BEARISH' if indicator.is_sell_signal else 'NONE'})")
+    print(f"  * Số ngưỡng hỗ trợ hoạt động     : {len(indicator.support_levels)}")
+    print(f"  * Số ngưỡng kháng cự hoạt động   : {len(indicator.resistance_levels)}")
+
+    print(f"\n[6.2] Nhật ký các sự kiện đảo chiều khớp vùng [Hỗ trợ / Kháng cự +/- ATR] (Tổng số: {len(events)} sự kiện):")
+    if events:
+        print(f"  {'Nến':<5} | {'Ngày':<12} | {'Giá':<9} | {'Signal':<7} | {'Trend':<6} | {'Mô hình nến':<18} | {'Mô tả'}")
+        print("  " + "-" * 95)
+        for ev in events[:8]:
+            sig_str = "+1 (BUY)" if ev["signal"] == 1 else "-1 (SELL)"
+            print(f"  #{ev['bar']:<4} | {ev['date']:<12} | {ev['price']:>9,.1f} | {sig_str:<7} | {ev['trend']:>+5} | "
+                  f"{ev['pattern']:<18} | {ev['reason']}")
+        if len(events) > 8:
+            print(f"  ... ({len(events) - 8} sự kiện đảo chiều khác trong lịch sử)")
+    else:
+        print("  Không có sự kiện đảo chiều chạm vùng trong khoảng thời gian này.")
+
+    print("  => Kiểm tra SupportResistanceReversalIndicator: HOÀN TẤT VÀ HỢP LỆ.")
+
+# ==============================================================================
 # 7. Main Entry Point
 # ==============================================================================
 
@@ -566,7 +633,7 @@ def main() -> None:
     demo_directional_movement_index(bars, df)
     demo_multivariate_linear_regression(df)
     demo_integrated_strategy(bars, df)
-
+    demo_support_resistance_reversal(bars, df)
     # 3. Vẽ biểu đồ nếu có yêu cầu
     if args.plot:
         try:

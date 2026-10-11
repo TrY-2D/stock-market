@@ -299,10 +299,8 @@ class RollingStatistics(Indicator):
 
         self._set_has_inputs(True)
 
-        if (
-            self.expanding
-            or n >= self.window
-        ):
+        init_threshold = 2 if self.expanding else min(self.window, 20)
+        if n >= init_threshold:
             self._set_initialized(True)
 
     # ======================================================================

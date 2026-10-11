@@ -122,7 +122,7 @@ class LinearRegressionChannel(Indicator):
         # ------------------------------------------------------------------
 
         if self.expanding:
-            self._buffer: deque[float] = deque(maxlen=300)
+            self._buffer: deque[float] = deque()
         else:
             self._buffer = deque(maxlen=self.window)
 

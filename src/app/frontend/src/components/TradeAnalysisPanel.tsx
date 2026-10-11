@@ -6,7 +6,7 @@ interface TradeAnalysisPanelProps {
   summary: BacktestSummaryMetrics | null;
 }
 
-export const TradeAnalysisPanel: React.FC<TradeAnalysisPanelProps> = ({ trades, summary }) => {
+export const TradeAnalysisPanel: React.FC<TradeAnalysisPanelProps> = ({ trades }) => {
   const [filterAction, setFilterAction] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
   const [searchDate, setSearchDate] = useState<string>('');
 
@@ -17,116 +17,146 @@ export const TradeAnalysisPanel: React.FC<TradeAnalysisPanelProps> = ({ trades, 
   });
 
   return (
-    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', overflow: 'hidden' }}>
-      {/* Header & Controls */}
-      <div style={{ padding: '12px 16px', background: '#1e293b', borderBottom: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#f8fafc' }}>
-            📋 Nhật Ký Giao Dịch & Luận Điểm ({filteredTrades.length}/{trades.length} lệnh)
-          </h3>
-          <div style={{ display: 'flex', gap: '4px' }}>
+    <div className="w-full bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-xl overflow-hidden shadow-xl shadow-black/20 text-slate-200">
+      {/* Header & Controls Toolbar */}
+      <div className="p-4 bg-slate-900 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-base">📋</span>
+            <h3 className="font-semibold text-sm text-slate-100 tracking-tight">
+              Nhật Ký Lệnh & Khớp V_order
+            </h3>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
+              {filteredTrades.length} / {trades.length}
+            </span>
+          </div>
+
+          <div className="flex rounded-lg p-0.5 bg-slate-950 border border-slate-800 text-xs">
             {(['ALL', 'BUY', 'SELL'] as const).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setFilterAction(mode)}
-                style={{
-                  padding: '4px 10px',
-                  fontSize: '11px',
-                  fontWeight: 600,
-                  borderRadius: '4px',
-                  border: '1px solid #475569',
-                  background: filterAction === mode ? '#38bdf8' : '#0f172a',
-                  color: filterAction === mode ? '#0f172a' : '#94a3b8',
-                  cursor: 'pointer',
-                }}
+                className={`px-3 py-1 rounded-md font-medium transition-all ${
+                  filterAction === mode
+                    ? mode === 'BUY'
+                      ? 'bg-emerald-500/20 text-emerald-400 font-semibold shadow-sm'
+                      : mode === 'SELL'
+                      ? 'bg-rose-500/20 text-rose-400 font-semibold shadow-sm'
+                      : 'bg-sky-500/20 text-sky-400 font-semibold shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                {mode === 'ALL' ? 'Tất cả' : mode === 'BUY' ? 'Lệnh MUA' : 'Lệnh BÁN'}
+                {mode === 'ALL' ? 'Tất cả' : mode === 'BUY' ? 'Lệnh Mua' : 'Lệnh Bán'}
               </button>
             ))}
           </div>
         </div>
 
-        <input
-          type="text"
-          placeholder="Lọc theo ngày (YYYY-MM-DD)..."
-          value={searchDate}
-          onChange={(e) => setSearchDate(e.target.value)}
-          style={{ background: '#0f172a', border: '1px solid #475569', color: '#f8fafc', padding: '4px 10px', borderRadius: '4px', fontSize: '12px', width: '220px' }}
-        />
+        <div className="relative">
+          <input
+            type="text"
+            placeholder="Tìm theo ngày (YYYY-MM-DD)..."
+            value={searchDate}
+            onChange={(e) => setSearchDate(e.target.value)}
+            className="bg-slate-950 border border-slate-700/80 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 transition-all w-60"
+          />
+          <span className="absolute left-2.5 top-1.5 text-slate-500 text-xs pointer-events-none">🔍</span>
+        </div>
       </div>
 
-      {/* Table */}
-      <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'left' }}>
+      {/* Table Container */}
+      <div className="max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
+        <table className="w-full border-collapse text-xs text-left">
           <thead>
-            <tr style={{ background: '#1e293b', color: '#94a3b8', borderBottom: '1px solid #334155', position: 'sticky', top: 0, zIndex: 1 }}>
-              <th style={{ padding: '8px 12px' }}>#</th>
-              <th style={{ padding: '8px 12px' }}>Ngày</th>
-              <th style={{ padding: '8px 12px' }}>Lệnh</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Giá (VNĐ)</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Khối Lượng</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Giá Trị (VNĐ)</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Phí & Thuế</th>
-              <th style={{ padding: '8px 12px', textAlign: 'center' }}>Factor</th>
-              <th style={{ padding: '8px 12px', textAlign: 'center' }}>Luận Điểm</th>
-              <th style={{ padding: '8px 12px' }}>Lý Do Khớp Lệnh</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>NAV Sau Lệnh</th>
+            <tr className="bg-slate-950/80 text-slate-400 border-b border-slate-800 sticky top-0 z-10 backdrop-blur font-medium">
+              <th className="py-2.5 px-3">#</th>
+              <th className="py-2.5 px-3">Ngày</th>
+              <th className="py-2.5 px-3">Lệnh</th>
+              <th className="py-2.5 px-3 text-right">Giá Khớp</th>
+              <th className="py-2.5 px-3 text-right">Khối Lượng</th>
+              <th className="py-2.5 px-3 text-right">Giá Trị (VNĐ)</th>
+              <th className="py-2.5 px-3 text-center">Cấp Li</th>
+              <th className="py-2.5 px-3 text-center">Luận Điểm</th>
+              <th className="py-2.5 px-3 text-right">PnL Lệnh</th>
+              <th className="py-2.5 px-3">Diễn Giải Chi Tiết</th>
+              <th className="py-2.5 px-3 text-right">NAV Sau Lệnh</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-slate-800/60 font-mono">
             {filteredTrades.length === 0 ? (
               <tr>
-                <td colSpan={11} style={{ padding: '24px', textAlign: 'center', color: '#64748b' }}>
-                  Chưa có giao dịch nào phù hợp tiêu chí lọc.
+                <td colSpan={11} className="py-10 text-center text-slate-500 font-sans">
+                  Không tìm thấy giao dịch nào phù hợp với bộ lọc.
                 </td>
               </tr>
             ) : (
-              filteredTrades.map((t) => (
-                <tr key={t.trade_id} style={{ borderBottom: '1px solid #1e293b', background: t.trade_id % 2 === 0 ? '#0f172a' : '#141e33' }}>
-                  <td style={{ padding: '8px 12px', color: '#64748b' }}>#{t.trade_id}</td>
-                  <td style={{ padding: '8px 12px', color: '#cbd5e1', fontWeight: 500 }}>{t.date}</td>
-                  <td style={{ padding: '8px 12px' }}>
-                    <span
-                      style={{
-                        padding: '2px 8px',
-                        borderRadius: '4px',
-                        fontWeight: 700,
-                        fontSize: '11px',
-                        background: t.action === 'BUY' ? 'rgba(8, 153, 129, 0.2)' : 'rgba(242, 54, 69, 0.2)',
-                        color: t.action === 'BUY' ? '#10b981' : '#f43f5e',
-                      }}
-                    >
-                      {t.action}
-                    </span>
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, color: '#f8fafc' }}>
-                    {t.price.toLocaleString('vi-VN')}
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', color: '#cbd5e1' }}>
-                    {t.shares.toLocaleString('vi-VN')}
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', color: '#cbd5e1' }}>
-                    {t.amount.toLocaleString('vi-VN')}
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', color: '#94a3b8' }}>
-                    {t.fee_tax.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 700, color: '#38bdf8' }}>
-                    {t.factor}
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                    <span style={{ padding: '2px 6px', borderRadius: '4px', background: t.theses_count >= 3 ? '#065f46' : '#334155', color: '#f8fafc', fontWeight: 600 }}>
-                      {t.theses_count}/5
-                    </span>
-                  </td>
-                  <td style={{ padding: '8px 12px', color: '#94a3b8', fontSize: '11px' }}>
-                    {t.reason}
-                  </td>
-                  <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, color: '#38bdf8' }}>
-                    {t.nav > 0 ? t.nav.toLocaleString('vi-VN', { maximumFractionDigits: 0 }) : '-'}
-                  </td>
-                </tr>
-              ))
+              filteredTrades.map((t) => {
+                const isBuy = t.action === 'BUY';
+                const hasPnl = !isBuy && typeof t.pnl === 'number' && Math.abs(t.pnl) > 0.01;
+                const pnlPositive = (t.pnl || 0) > 0;
+                return (
+                  <tr
+                    key={t.trade_id}
+                    className="hover:bg-slate-800/40 transition-colors group"
+                  >
+                    <td className="py-2 px-3 text-slate-500">#{t.trade_id}</td>
+                    <td className="py-2 px-3 text-slate-300 font-medium font-sans whitespace-nowrap">{t.date}</td>
+                    <td className="py-2 px-3">
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold tracking-wide uppercase ${
+                          isBuy
+                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                        }`}
+                      >
+                        {t.action}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-right font-semibold text-slate-100">
+                      {t.price.toLocaleString('vi-VN')}
+                    </td>
+                    <td className="py-2 px-3 text-right text-slate-200">
+                      {t.shares.toLocaleString('vi-VN')}
+                    </td>
+                    <td className="py-2 px-3 text-right text-slate-300">
+                      {t.amount.toLocaleString('vi-VN')}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <span className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-sky-500/15 text-sky-400 border border-sky-500/20">
+                        L{t.level ?? t.factor}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+                          t.theses_count >= 4
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : t.theses_count > 0
+                            ? 'bg-slate-800 text-slate-300'
+                            : 'bg-rose-500/20 text-rose-300'
+                        }`}
+                      >
+                        {t.theses_count}/7
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      {hasPnl ? (
+                        <span className={`font-semibold ${pnlPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {pnlPositive ? '+' : ''}{(t.pnl || 0).toLocaleString('vi-VN', { maximumFractionDigits: 0 })}
+                        </span>
+                      ) : (
+                        <span className="text-slate-600">-</span>
+                      )}
+                    </td>
+                    <td className="py-2 px-3 text-slate-400 font-sans text-[11px] max-w-xs truncate" title={t.reason}>
+                      {t.reason}
+                    </td>
+                    <td className="py-2 px-3 text-right font-semibold text-sky-400">
+                      {t.nav > 0 ? t.nav.toLocaleString('vi-VN', { maximumFractionDigits: 0 }) : '-'}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

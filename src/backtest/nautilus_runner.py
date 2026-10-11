@@ -103,6 +103,7 @@ class NautilusBacktestRunner:
         currency_str: str = "VND",
         initial_cash: float = 1_000_000_000.0,
         base_nav_pct: float = 0.04,
+        v0: int | None = None,
         lot_size: int = 100,
         window: int = 30,
         linear_window: int | None = None,
@@ -161,9 +162,13 @@ class NautilusBacktestRunner:
             dividend_history=div_hist,
             base_nav_pct=base_nav_pct,
             lot_size=lot_size,
+            v0=v0,
+            initial_cash=initial_cash,
+            buy_fee_rate=0.0015,
+            sell_fee_tax_rate=0.0025,
             window=window,
-            linear_window=linear_window or window,
-            sma_window=sma_window or window,
+            linear_window=linear_window,
+            sma_window=min(int(sma_window), 1500) if sma_window is not None else 1500,
             beta_window=beta_window or window,
             z_score_window=z_score_window,
             sma20_period=sma20_period,
@@ -188,9 +193,11 @@ class NautilusBacktestRunner:
 
         # 7. Tính toán đường cong NAV và các lệnh
         trades_log: list[TradeRecord] = []
-        running_cash = initial_cash
-        running_shares = 0
-        if not df_fills.empty:
+        if strategy.strategy_trades:
+            trades_log = list(strategy.strategy_trades)
+        elif not df_fills.empty:
+            running_cash = initial_cash
+            running_shares = 0
             for _, row in df_fills.iterrows():
                 fill_dt = pd.to_datetime(row.get("ts_last", 0)).strftime("%Y-%m-%d")
                 side_str = str(row.get("side", "BUY")).upper()
@@ -267,10 +274,14 @@ class NautilusBacktestRunner:
                 "nav": nav_t,
                 "benchmark_nav": bench_t,
                 "p_suggest": snap.p_suggest if snap else c,
+                "support": snap.support if snap else c,
+                "resistance": snap.resistance if snap else c,
                 "buy_threshold": snap.buy_threshold if snap else c,
                 "sell_threshold": snap.sell_threshold if snap else c,
                 "theses_count": snap.theses_count if snap else 0,
                 "expected_return": snap.expected_return if snap else 0.0,
+                "loser_ratio": snap.loser_ratio if snap else 0.5,
+                "discount": snap.discount if snap else 0.0,
                 "pqr": snap.pqr if snap else 0.0,
                 "pqt": snap.pqt if snap else 0.0,
                 "pr": snap.pr if snap else 0.0,
@@ -279,6 +290,14 @@ class NautilusBacktestRunner:
                 "score_e": snap.score_e if snap else 0.5,
                 "score_u": snap.score_u if snap else 0.5,
                 "score_l": snap.score_l if snap else 0.5,
+                "surplus": strategy.execute_engine.surplus,
+                "signal": snap.signal if snap else 0,
+                "trend": snap.trend if snap else 0,
+                "plus_di": snap.plus_di if snap else 0.0,
+                "minus_di": snap.minus_di if snap else 0.0,
+                "adx": snap.adx if snap else 0.0,
+                "position_shares": cum_shares,
+                "position_level": max(strategy.execute_engine.open_levels, default=0),
             })
 
         eq_df = pd.DataFrame(equity_records)
@@ -305,19 +324,18 @@ class NautilusBacktestRunner:
             sortino_ratio = 0.0
 
         calmar_ratio = cagr_pct / max(max_drawdown_pct, 1e-4)
-        buy_trades_count = sum(1 for t in trades_log if t.action == "BUY")
-        sell_trades_count = sum(1 for t in trades_log if t.action == "SELL")
+        # Thống kê lệnh & Win rate từ ExecuteEngine / trades_log
+        total_trades = len(trades_log)
+        buy_trades = sum(1 for t in trades_log if t.action == "BUY")
+        sell_trades = sum(1 for t in trades_log if t.action == "SELL")
 
-        # Win rate từ position report của Nautilus
-        win_rate_pct = 0.0
-        profit_factor = 0.0
-        if not df_positions.empty and "realized_pnl" in df_positions.columns:
-            pnls = [float(str(p).split()[0]) for p in df_positions["realized_pnl"] if str(p) != "None"]
-            wins = [p for p in pnls if p > 0]
-            losses = [abs(p) for p in pnls if p < 0]
-            win_rate_pct = (len(wins) / len(pnls) * 100.0) if pnls else 0.0
-            profit_factor = (sum(wins) / sum(losses)) if losses and sum(losses) > 0 else (10.0 if wins else 0.0)
+        sell_records = [t for t in trades_log if t.action == "SELL"]
+        win_trades = sum(1 for t in sell_records if t.pnl > 0)
+        win_rate_pct = (win_trades / max(len(sell_records), 1)) * 100.0 if sell_records else 0.0
 
+        gains = sum(t.pnl for t in sell_records if t.pnl > 0)
+        losses = sum(abs(t.pnl) for t in sell_records if t.pnl < 0)
+        profit_factor = (gains / losses) if losses > 1e-6 else (100.0 if gains > 0 else 1.0)
         return BacktestResult(
             initial_nav=initial_cash,
             final_nav=final_nav,
@@ -330,9 +348,9 @@ class NautilusBacktestRunner:
             calmar_ratio=calmar_ratio,
             win_rate_pct=win_rate_pct,
             profit_factor=profit_factor,
-            total_trades=len(trades_log),
-            buy_trades=buy_trades_count,
-            sell_trades=sell_trades_count,
+            total_trades=total_trades,
+            buy_trades=buy_trades,
+            sell_trades=sell_trades,
             trades_log=trades_log,
             equity_curve=eq_df,
         )

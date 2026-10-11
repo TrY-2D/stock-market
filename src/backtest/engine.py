@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 import math
 from typing import Any, Sequence
@@ -8,6 +7,7 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+from src.strategies.execution import ExecutionResult, FibonacciExecuteEngine, PositionLevel
 from src.strategies.indicators.candlestick import CandlestickPatternDetector
 from src.strategies.valuation import ExpectedReturnEngine, ValuationSnapshot
 
@@ -27,6 +27,9 @@ class TradeRecord:
     cash_after: float
     shares_after: int
     nav_after: float
+    level: int = 1
+    pnl: float = 0.0
+    surplus_after: float = 0.0
 
 
 @dataclass
@@ -53,22 +56,23 @@ class BacktestResult:
 class QuantitativeBacktestEngine:
     """Engine mô phỏng và kiểm thử chiến lược định lượng (Direct Vector Backtesting Engine).
 
-    Tích hợp toàn diện:
-    - ExpectedReturnEngine (E, Q, Beta, LRC, SMA, D)
-    - 5 Luận điểm (Theses scoring >= 3/5)
-    - Nhận diện nến đảo chiều (CandlestickPatternDetector)
-    - DMI Trigger & Trend Confirmation (Delay khi trend_strength > 30)
-    - Quản lý vốn Tranche Fibonacci (1, 1, 2, 3, 5 cho Mua; 5, 3, 2, 1, 1 cho Bán)
-    - Hạch toán phí giao dịch, thuế và cổ tức tiền mặt
+    Tích hợp toàn diện theo đặc tả Execute Engine:
+    - ExpectedReturnEngine: Dự phóng lợi nhuận (A), 6 Luận điểm định lượng, Reversal Indicator (DMI, Nến, Linear, SMA).
+    - FibonacciExecuteEngine: Quản lý vị thế đa cấp độc lập M = [1, 1, 2, 3, 5, 8], sức chứa tối đa V_max = 21 * V0.
+    - Logic MUA: Cấp thấp nhất chưa mở L1 -> L6, ràng buộc P_buy,i < P_buy,prev.
+    - Logic BÁN: Cấp cao nhất hiện có L6 -> L1, PnL Barrier (PnL > 0 hoặc |PnL| <= Surplus).
+    - Hạch toán phí giao dịch, thuế, cổ tức và quỹ thặng dư tích lũy.
     """
 
-    BUY_FACTORS: tuple[int, ...] = (1, 1, 2, 3, 5)
-    SELL_FACTORS: tuple[int, ...] = (5, 3, 2, 1, 1)
+    FIBONACCI_MULTIPLIERS: tuple[int, ...] = (1, 1, 2, 3, 5, 8)
+    BUY_FACTORS: tuple[int, ...] = FIBONACCI_MULTIPLIERS
+    SELL_FACTORS: tuple[int, ...] = (8, 5, 3, 2, 1, 1)
 
     def __init__(
         self,
         initial_cash: float = 1_000_000_000.0,  # 1 tỷ VNĐ
         base_nav_pct: float = 0.04,             # N% NAV cơ sở cho factor = 1 (4%)
+        v0: int | None = None,                  # Khối lượng lệnh sơ cấp V0
         lot_size: int = 100,                    # Chuẩn lô tối thiểu sàn HOSE/HNX
         buy_fee_rate: float = 0.0015,           # Phí mua 0.15%
         sell_fee_tax_rate: float = 0.0025,      # Phí 0.15% + Thuế 0.10% = 0.25%
@@ -84,22 +88,24 @@ class QuantitativeBacktestEngine:
         min_theses: int = 3,
         expanding: bool = False,
     ):
-        self.initial_cash = initial_cash
-        self.base_nav_pct = base_nav_pct
-        self.lot_size = lot_size
-        self.buy_fee_rate = buy_fee_rate
-        self.sell_fee_tax_rate = sell_fee_tax_rate
-        self.sma20_period = sma20_period
-        self.window = window
-        self.linear_window = linear_window or window
-        self.sma_window = sma_window or window
+        self.initial_cash = float(initial_cash)
+        self.base_nav_pct = float(base_nav_pct)
+        self.v0 = v0
+        self.lot_size = int(lot_size)
+        self.buy_fee_rate = float(buy_fee_rate)
+        self.sell_fee_tax_rate = float(sell_fee_tax_rate)
+        self.sma20_period = int(sma20_period)
+        self.window = int(window)
+        self.linear_window = linear_window
+        self.sma_window = min(int(sma_window), 1500) if sma_window is not None else 1500
         self.beta_window = beta_window or window
         self.z_score_window = z_score_window
-        self.atr_period = atr_period
-        self.atr_multiplier = atr_multiplier
-        self.linear_k = linear_k
-        self.min_theses = min_theses
-        self.expanding = expanding
+        self.atr_period = int(atr_period)
+        self.atr_multiplier = float(atr_multiplier)
+        self.linear_k = float(linear_k)
+        self.min_theses = int(min_theses)
+        self.expanding = bool(expanding)
+
     def run(
         self,
         market_data: pd.DataFrame,
@@ -109,7 +115,7 @@ class QuantitativeBacktestEngine:
         """Thực thi backtest trên toàn bộ chuỗi dữ liệu lịch sử."""
         div_5y = list(dividend_history) if dividend_history else [1500.0, 1500.0, 2000.0, 2000.0, 2500.0]
 
-        # Khởi tạo mô hình định giá và trạng thái danh mục
+        # Khởi tạo mô hình định giá E và 6 luận điểm
         engine = ExpectedReturnEngine(
             window=self.window,
             linear_window=self.linear_window,
@@ -121,13 +127,18 @@ class QuantitativeBacktestEngine:
             linear_k=self.linear_k,
             expanding=self.expanding,
         )
-        cash = self.initial_cash
-        shares_held = 0
-        total_bought_shares = 0
-        total_bought_cost = 0.0
 
-        buy_tranche_idx = 0
-        sell_tranche_idx = 0
+        # Khởi tạo Execute Engine quản lý lệnh đa cấp Fibonacci
+        init_v0 = self.v0 or max(self.lot_size, 100)
+        execute_engine = FibonacciExecuteEngine(
+            v0=init_v0,
+            initial_cash=self.initial_cash,
+            initial_surplus=0.0,
+            buy_fee_rate=self.buy_fee_rate,
+            sell_fee_tax_rate=self.sell_fee_tax_rate,
+            lot_size=self.lot_size,
+            net_pnl=True,
+        )
 
         trades: list[TradeRecord] = []
         equity_records: list[dict[str, Any]] = []
@@ -186,142 +197,105 @@ class QuantitativeBacktestEngine:
                 inflation_rate=inf,
                 bond_yield_10y=by,
             )
+            # Cập nhật chu kỳ thanh toán bù trừ T+ và số luận điểm K
+            execute_engine.advance_settlement(d_str)
+            execute_engine.update_theses_count(snapshot.theses_count)
 
-            current_nav = cash + shares_held * c
-            dmi = engine.stock_dmi
+            # 4. Tự động tính toán lại V0 khi vị thế = 0 (nếu không cố định v0 từ config)
+            if execute_engine.total_holding_shares == 0 and self.v0 is None and c > 0:
+                current_nav = execute_engine.total_nav(c)
+                raw_v0 = (self.base_nav_pct * current_nav) / c
+                computed_v0 = max(self.lot_size, int(math.floor(raw_v0 / self.lot_size) * self.lot_size))
+                while computed_v0 > self.lot_size and (21 * computed_v0 * c * (1.0 + self.buy_fee_rate) > current_nav):
+                    computed_v0 -= self.lot_size
+                try:
+                    execute_engine.set_v0(computed_v0)
+                except ValueError:
+                    pass
 
-            # 4. Kiểm tra điều kiện DMI & Đảo chiều (với delay khi trend_strength > 30)
-            dmi_buy_signal = dmi.check_buy_reversal_signal(candle_sig.is_bullish)
-            dmi_sell_signal = dmi.check_sell_reversal_signal(candle_sig.is_bearish)
+            # 5. Xử lý Mua / Bán trực tiếp theo Số Luận Điểm K và V_order
+            # Thêm 1 luận điểm -> Thêm khối lượng cổ phiếu; Bớt 1 luận điểm -> Bớt khối lượng cổ phiếu
+            change_rate = getattr(snapshot, "change_rate", 1) or 1
+            execute_engine.sync_theses_demand(snapshot.theses_count)
 
-            executed = False
+            v_action, v_level, v_order = execute_engine.calculate_v_order(change_rate=change_rate)
 
-            # =========================================================
-            # 5. Quy tắc MUA (Section III.4 & III.5)
-            # =========================================================
-            if (
-                snapshot.theses_count >= self.min_theses
-                and c <= snapshot.buy_threshold
-                and dmi_buy_signal
-                and sma20 > snapshot.p_suggest
-                and buy_tranche_idx < len(self.BUY_FACTORS)
-            ):
-                factor = self.BUY_FACTORS[buy_tranche_idx]
-                target_value = factor * self.base_nav_pct * current_nav
-                raw_shares = target_value / c
-                shares_to_buy = int(math.floor(raw_shares / self.lot_size) * self.lot_size)
-
-                # Kiểm tra đủ tiền mặt (bao gồm phí mua)
-                cost_needed = shares_to_buy * c * (1.0 + self.buy_fee_rate)
-                if cost_needed > cash and c > 0:
-                    max_affordable = cash / (c * (1.0 + self.buy_fee_rate))
-                    shares_to_buy = int(math.floor(max_affordable / self.lot_size) * self.lot_size)
-                    cost_needed = shares_to_buy * c * (1.0 + self.buy_fee_rate)
-
-                if shares_to_buy >= self.lot_size:
-                    trade_amt = shares_to_buy * c
-                    fee = trade_amt * self.buy_fee_rate
-                    cash -= (trade_amt + fee)
-                    shares_held += shares_to_buy
-                    total_bought_shares += shares_to_buy
-                    total_bought_cost += (trade_amt + fee)
-
-                    current_nav = cash + shares_held * c
-                    reason_desc = (
-                        f"Theses: {snapshot.theses_count}/5 | In BuyZone (<{snapshot.buy_threshold:,.0f}) | "
-                        f"Reversal Trigger (TS={dmi.trend_strength:.1f}) | SMA20>{snapshot.p_suggest:,.0f}"
-                    )
-
+            if v_action == "BUY" and v_order >= self.lot_size:
+                exec_res = execute_engine.execute_buy(
+                    price=c,
+                    volume=v_order,
+                    timestamp=d_str,
+                    metadata={"theses_count": snapshot.theses_count},
+                )
+                if exec_res.success and exec_res.level is not None:
+                    multiplier = self.FIBONACCI_MULTIPLIERS[exec_res.level - 1]
                     trades.append(
                         TradeRecord(
                             date=d_str,
                             action="BUY",
                             price=c,
-                            shares=shares_to_buy,
-                            amount=trade_amt,
-                            fee_tax=fee,
-                            factor=factor,
+                            shares=exec_res.volume,
+                            amount=exec_res.volume * c,
+                            fee_tax=exec_res.fee_tax,
+                            factor=multiplier,
                             theses_count=snapshot.theses_count,
-                            reason=reason_desc,
-                            cash_after=cash,
-                            shares_after=shares_held,
-                            nav_after=current_nav,
+                            reason=exec_res.reason,
+                            cash_after=execute_engine.cash,
+                            shares_after=execute_engine.total_holding_shares,
+                            nav_after=execute_engine.total_nav(c),
+                            level=exec_res.level,
+                            pnl=0.0,
+                            surplus_after=execute_engine.surplus,
                         )
                     )
-                    buy_tranche_idx += 1
-                    # Sau khi mua, mở lại chu kỳ bán nếu đã chốt trước đó
-                    sell_tranche_idx = 0
-                    dmi.pending_buy_reversal = False
-                    executed = True
 
-            # =========================================================
-            # 6. Quy tắc BÁN (Section III.4 & III.6)
-            # =========================================================
-            if (
-                not executed
-                and shares_held >= self.lot_size
-                and c >= snapshot.sell_threshold
-                and dmi_sell_signal
-                and sma20 < snapshot.p_suggest
-                and sell_tranche_idx < len(self.SELL_FACTORS)
-            ):
-                factor = self.SELL_FACTORS[sell_tranche_idx]
-                sell_ratio = min(1.0, factor / sum(self.SELL_FACTORS[sell_tranche_idx:]))
-                raw_shares = shares_held * sell_ratio
-                shares_to_sell = int(math.floor(raw_shares / self.lot_size) * self.lot_size)
-
-                if sell_tranche_idx == len(self.SELL_FACTORS) - 1 or shares_held - shares_to_sell < self.lot_size:
-                    shares_to_sell = shares_held
-
-                if shares_to_sell >= self.lot_size:
-                    trade_amt = shares_to_sell * c
-                    fee_tax = trade_amt * self.sell_fee_tax_rate
-                    cash += (trade_amt - fee_tax)
-                    shares_held -= shares_to_sell
-
-                    current_nav = cash + shares_held * c
-                    reason_desc = (
-                        f"In SellZone (>{snapshot.sell_threshold:,.0f}) | "
-                        f"Reversal Trigger (TS={dmi.trend_strength:.1f}) | SMA20<{snapshot.p_suggest:,.0f}"
-                    )
-
+            elif v_action == "SELL" and v_order >= self.lot_size:
+                exec_res = execute_engine.execute_sell(
+                    price=c,
+                    volume=v_order,
+                    timestamp=d_str,
+                )
+                if exec_res.success and exec_res.level is not None:
+                    multiplier = self.FIBONACCI_MULTIPLIERS[exec_res.level - 1]
                     trades.append(
                         TradeRecord(
                             date=d_str,
                             action="SELL",
                             price=c,
-                            shares=shares_to_sell,
-                            amount=trade_amt,
-                            fee_tax=fee_tax,
-                            factor=factor,
+                            shares=exec_res.volume,
+                            amount=exec_res.volume * c,
+                            fee_tax=exec_res.fee_tax,
+                            factor=multiplier,
                             theses_count=snapshot.theses_count,
-                            reason=reason_desc,
-                            cash_after=cash,
-                            shares_after=shares_held,
-                            nav_after=current_nav,
+                            reason=exec_res.reason,
+                            cash_after=execute_engine.cash,
+                            shares_after=execute_engine.total_holding_shares,
+                            nav_after=execute_engine.total_nav(c),
+                            level=exec_res.level,
+                            pnl=exec_res.pnl,
+                            surplus_after=execute_engine.surplus,
                         )
                     )
-                    sell_tranche_idx += 1
-                    if shares_held == 0:
-                        buy_tranche_idx = 0
-                    dmi.pending_sell_reversal = False
-                    executed = True
-
             # Ghi nhận trạng thái Equity Curve hàng ngày
             benchmark_val = benchmark_shares * c
+            current_nav = execute_engine.total_nav(c)
             equity_records.append({
                 "date": d_str,
                 "price": c,
-                "cash": cash,
-                "shares_held": shares_held,
-                "stock_value": shares_held * c,
+                "cash": execute_engine.cash,
+                "shares_held": execute_engine.total_holding_shares,
+                "stock_value": execute_engine.total_holding_shares * c,
                 "nav": current_nav,
                 "benchmark_nav": benchmark_val,
                 "p_suggest": snapshot.p_suggest,
+                "support": snapshot.support,
+                "resistance": snapshot.resistance,
                 "buy_threshold": snapshot.buy_threshold,
                 "sell_threshold": snapshot.sell_threshold,
                 "theses_count": snapshot.theses_count,
                 "expected_return": snapshot.expected_return,
+                "loser_ratio": snapshot.loser_ratio,
+                "discount": snapshot.discount,
                 "pqr": snapshot.pqr,
                 "pqt": snapshot.pqt,
                 "pr": snapshot.pr,
@@ -330,6 +304,14 @@ class QuantitativeBacktestEngine:
                 "score_e": snapshot.score_e,
                 "score_u": snapshot.score_u,
                 "score_l": snapshot.score_l,
+                "surplus": execute_engine.surplus,
+                "signal": snapshot.signal,
+                "trend": snapshot.trend,
+                "plus_di": snapshot.plus_di,
+                "minus_di": snapshot.minus_di,
+                "adx": snapshot.adx,
+                "position_shares": execute_engine.total_holding_shares,
+                "position_level": max(execute_engine.open_levels, default=0),
             })
 
         # -------------------------------------------------------------
@@ -339,61 +321,48 @@ class QuantitativeBacktestEngine:
         final_nav = float(eq_df["nav"].iloc[-1])
         total_return_pct = (final_nav - self.initial_cash) / self.initial_cash * 100.0
 
+        n_days = max(len(eq_df), 1)
+        years = n_days / 252.0
+        cagr_pct = ((final_nav / self.initial_cash) ** (1.0 / max(years, 0.01)) - 1.0) * 100.0
+
         p_last = float(market_data.iloc[-1]["close"])
         benchmark_final = benchmark_shares * p_last
         benchmark_return_pct = (benchmark_final - self.initial_cash) / self.initial_cash * 100.0
 
-        n_days = max(len(eq_df), 1)
-        years = max(n_days / 252.0, 1.0 / 252.0)
-        cagr_pct = ((final_nav / self.initial_cash) ** (1.0 / years) - 1.0) * 100.0 if final_nav > 0 else -100.0
+        # Max Drawdown
+        cummax = eq_df["nav"].cummax()
+        drawdowns = (eq_df["nav"] - cummax) / cummax
+        max_drawdown_pct = float(abs(drawdowns.min())) * 100.0
 
-        rolling_max = eq_df["nav"].cummax()
-        drawdown_series = (eq_df["nav"] - rolling_max) / rolling_max
-        max_drawdown_pct = float(abs(drawdown_series.min())) * 100.0
-
+        # Sharpe & Sortino
         daily_returns = eq_df["nav"].pct_change().dropna()
-        if len(daily_returns) > 1 and daily_returns.std() > 1e-12:
-            rf_daily = 0.05 / 252.0
-            excess_returns = daily_returns - rf_daily
-            sharpe_ratio = float(math.sqrt(252.0) * excess_returns.mean() / daily_returns.std())
+        rf_daily = 0.05 / 252.0
 
-            neg_returns = daily_returns[daily_returns < 0]
-            downside_std = neg_returns.std() if len(neg_returns) > 1 else daily_returns.std()
-            sortino_ratio = float(math.sqrt(252.0) * excess_returns.mean() / max(downside_std, 1e-8))
+        if len(daily_returns) > 1 and daily_returns.std() > 1e-12:
+            excess_returns = daily_returns - rf_daily
+            sharpe_ratio = float(np.mean(excess_returns) / np.std(daily_returns) * np.sqrt(252))
+            downside_returns = daily_returns[daily_returns < 0]
+            downside_std = float(np.std(downside_returns)) if len(downside_returns) > 1 else 1e-6
+            sortino_ratio = float(np.mean(excess_returns) / max(downside_std, 1e-6) * np.sqrt(252))
         else:
             sharpe_ratio = 0.0
             sortino_ratio = 0.0
 
         calmar_ratio = cagr_pct / max(max_drawdown_pct, 1e-4)
 
-        buy_trades_count = sum(1 for t in trades if t.action == "BUY")
-        sell_trades_count = sum(1 for t in trades if t.action == "SELL")
+        # Thống kê lệnh
+        total_trades = len(trades)
+        buy_trades = sum(1 for t in trades if t.action == "BUY")
+        sell_trades = sum(1 for t in trades if t.action == "SELL")
 
-        pnl_list: list[float] = []
-        cost_queue: deque[tuple[int, float]] = deque()
-        for t in trades:
-            if t.action == "BUY":
-                cost_queue.append((t.shares, t.price * (1.0 + self.buy_fee_rate)))
-            elif t.action == "SELL":
-                shares_to_match = t.shares
-                sale_revenue = t.amount - t.fee_tax
-                matched_cost = 0.0
-                while shares_to_match > 0 and cost_queue:
-                    q_shares, q_price = cost_queue.popleft()
-                    if q_shares <= shares_to_match:
-                        matched_cost += q_shares * q_price
-                        shares_to_match -= q_shares
-                    else:
-                        matched_cost += shares_to_match * q_price
-                        cost_queue.appendleft((q_shares - shares_to_match, q_price))
-                        shares_to_match = 0
-                trade_pnl = sale_revenue - matched_cost
-                pnl_list.append(trade_pnl)
+        # Win rate và Profit Factor tính theo kết quả từ ExecuteEngine
+        sell_records = [t for t in trades if t.action == "SELL"]
+        win_trades = sum(1 for t in sell_records if t.pnl > 0)
+        win_rate_pct = (win_trades / max(len(sell_records), 1)) * 100.0 if sell_records else 0.0
 
-        wins = [p for p in pnl_list if p > 0]
-        losses = [abs(p) for p in pnl_list if p < 0]
-        win_rate_pct = (len(wins) / len(pnl_list) * 100.0) if pnl_list else 0.0
-        profit_factor = (sum(wins) / sum(losses)) if losses and sum(losses) > 0 else (10.0 if wins else 0.0)
+        gains = sum(t.pnl for t in sell_records if t.pnl > 0)
+        losses = sum(abs(t.pnl) for t in sell_records if t.pnl < 0)
+        profit_factor = (gains / losses) if losses > 1e-6 else (100.0 if gains > 0 else 1.0)
 
         return BacktestResult(
             initial_nav=self.initial_cash,
@@ -407,9 +376,9 @@ class QuantitativeBacktestEngine:
             calmar_ratio=calmar_ratio,
             win_rate_pct=win_rate_pct,
             profit_factor=profit_factor,
-            total_trades=len(trades),
-            buy_trades=buy_trades_count,
-            sell_trades=sell_trades_count,
+            total_trades=total_trades,
+            buy_trades=buy_trades,
+            sell_trades=sell_trades,
             trades_log=trades,
             equity_curve=eq_df,
         )

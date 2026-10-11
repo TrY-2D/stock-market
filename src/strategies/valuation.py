@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import bisect
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
+import pandas as pd
 
 from src.strategies.indicators.beta import MultivariateLinearRegression
 from src.strategies.indicators.dmi import DirectionalMovementIndex
 from src.strategies.indicators.linear import LinearRegressionChannel
+from src.strategies.indicators.reversal import SupportResistanceReversalIndicator, ReversalSnapshot
 from src.strategies.indicators.sma import RollingStatistics, sigmoid
 
 
@@ -19,61 +21,119 @@ class ValuationSnapshot:
     """Ảnh chụp dữ liệu định giá và chấm điểm tại một phiên giao dịch."""
     # Các thành phần kỳ vọng
     saving_rate: float
-    pqr: float
-    pqt: float
+
     pr: float
     pt: float
     dividend_yield: float
-    expected_return: float  # E
+    expected_return: float  # A = 0.5 * pt + 0.5 * pr + dividend_yield - saving_rate
 
     # Các chỉ số bổ trợ
-    u_discount: float       # U: Chiết khấu từ ATH
-    l_loser_ratio: float    # L: Tỷ lệ loser 3 năm
+    discount: float       # B: Chiết khấu từ ATH
+    loser_ratio: float    # C: Tỷ lệ loser 3 năm
+    usdvnd_signal: float  # D: Tín hiệu USDVND (-1 * trend_usdvnd)
+    eurusd_signal: float  # E: Tín hiệu EURUSD / EURVND (trend_eur)
+    dxy_signal: float     # F: Tín hiệu DXY (-1 * trend_dxy)
+    price_signal: float  # G: Tín hiệu Price (trend_price)
 
-    # Sai số chuẩn RMSE
-    rmse_sma: float
-    rmse_linear: float
+    # 7 Luận điểm (Scores trong khoảng 0 - 1)
+    # Luận điểm bắt buộc
+    score_a: float        # Điểm lợi nhuận dự phóng
+    score_b: float        # Điểm chiết khấu từ đỉnh lịch sử
 
-    # 5 Luận điểm (Scores trong khoảng 0 - 1)
-    score_e: float
-    score_u: float
-    score_l: float
-    score_bp_sma: float          # Luận điểm 4: bp từ SMA RollingStatistics._update_probability
-    score_bp_linear: float       # Luận điểm 5: bp từ LinearRegressionChannel._update_probability
-    theses_count: int            # Số luận điểm đạt (>= 0.5)
+    # Luận điểm kích hoạt
+    score_c: float        # Điểm tỷ lệ loser 3 năm
+    score_d: float        # Điểm tỉ giá USDVND
+    score_e: float        # Điểm tỉ giá DXY
+    score_f: float        # Điểm tỉ giá EURUSD
+    score_g: float       # Điểm xu hướng giá Price (trend(Price))
 
-    @property
-    def score_rmse_sma(self) -> float:
-        return self.score_bp_sma
+    theses_count: int     # Số luận điểm đạt (>= 0.5)
 
-    @property
-    def score_rmse_linear(self) -> float:
-        return self.score_bp_linear
-    # Vùng giá gợi ý và ATR
+    # Kháng cự/ hỗ trợ và ATR
     atr: float
-    p_suggest: float
-    buy_threshold: float    # P_suggest + 1 ATR
-    sell_threshold: float   # P_suggest - 1 ATR
+
+    support: float
+    resistance: float
+
+    buy_threshold: float    # support + 1 ATR
+    sell_threshold: float   # resistance - 1 ATR
+
+    # Tín hiệu Reversal Indicator
+    signal: int = 0         # -1: Đảo chiều giảm, 1: Đảo chiều tăng, 0: Không tín hiệu
+    trend: int = 0          # -1: Downtrend, 1: Uptrend, 0: Chưa xác định
+    p_suggest: float = 0.0  # Giá cơ sở gợi ý (0.5 * (SMA + LRC))
+    active_support: float | None = None
+    active_resistance: float | None = None
+    plus_di: float = 0.0
+    minus_di: float = 0.0
+    adx: float = 0.0
+    trend_score: float = 0.0
+
+    # --- Backward compatibility aliases / properties ---
+    @property
+    def pqr(self) -> float:
+        return self.pr
+
+    @property
+    def pqt(self) -> float:
+        return self.pt
+
+    @property
+    def u_discount(self) -> float:
+        return self.discount
+
+    @property
+    def l_loser_ratio(self) -> float:
+        return self.loser_ratio
+
+    @property
+    def score_u(self) -> float:
+        return self.score_b
+
+    @property
+    def score_l(self) -> float:
+        return self.score_c
+
+    @property
+    def score_bp_sma(self) -> float:
+        return self.score_d
+
+    @property
+    def score_bp_linear(self) -> float:
+        return self.score_e
+
+    @property
+    def rmse_sma(self) -> float:
+        return 0.0
+
+    @property
+    def rmse_linear(self) -> float:
+        return 0.0
 
 
 class ExpectedReturnEngine:
-    """Mô hình dự phóng lợi nhuận (E), chỉ số bổ trợ (U, L) và chấm điểm 5 luận điểm
+    """
+    Mô hình tính và chấm điểm 6 luận điểm kết hợp Reversal Indicator.
 
-    Triển khai chính xác theo mục III của tài liệu Chiến lược Giao dịch Định lượng:
+    Quy trình tính toán:
+    -------------------
     - Bước 0: saving_rate = inflation + yield10y
-    - Bước 1: 3 xu hướng cho DXY, EURUSD, USDVND gom cùng DXY, EURUSD, saving_rate thành cụm Q (6 chỉ số)
-    - Bước 2: Mô hình BETA tương quan giữa Q và giá P
-    - Bước 3: Qt từ LinearRegressionChannel cho từng chỉ số trong Q
-    - Bước 4: Qr từ RollingStatistics cho từng chỉ số trong Q
-    - Bước 5: Pqt = BETA.predict(*Qt)
-    - Bước 6: Pqr = BETA.predict(*Qr)
-    - Bước 7: Pt từ LinearRegressionChannel của cổ phiếu
-    - Bước 8: Pr từ RollingStatistics của cổ phiếu
-    - Bước 9: D = median(Div 5 năm gần nhất) / Market Cap
-    - Bước 10: E = 0.42 * Pqr + 0.18 * Pqt + 0.28 * Pr + 0.12 * Pt + D
-    - U: Chiết khấu từ ATH
-    - L: Tỷ lệ loser trong 3 năm
-    - 5 luận điểm: chuẩn hóa z-score và sigmoid về 0-1
+    - Bước 1: Pt từ LinearRegressionChannel của cổ phiếu
+    - Bước 2: Pr từ RollingStatistics của cổ phiếu
+    - Bước 3: dividend_yield = median(Div 5 năm gần nhất) / Market Cap
+    - A = 0.5 * Pt + 0.5 * Pr + dividend_yield - saving_rate
+    - B: Chiết khấu từ ATH
+    - C: Tỷ lệ loser trong 3 năm
+    - D: usdvnd_signal = trend(USDVND) * -1
+    - E: eurusd_signal = trend(EURUSD)
+    - F: dxy_signal = trend(DXY) * -1
+    - G: price_signal = trend(Price)
+    - 7 luận điểm: chuẩn hóa z-score và sigmoid về 0 - 1
+
+    Kích thước window:
+    - Mô hình tuyến tính: sử dụng toàn bộ dữ liệu (expanding window / không giới hạn deque)
+    - Mô hình SMA: khoảng 1500 phiên
+    - Z-Score: áp dụng trên chuỗi dừng với cửa sổ dài bao phủ chu kỳ kinh tế
     """
 
     def __init__(
@@ -82,7 +142,7 @@ class ExpectedReturnEngine:
         linear_window: int | None = None,
         sma_window: int | None = None,
         beta_window: int | None = None,
-        z_score_window: int = 120,
+        z_score_window: int = 750,
         three_year_window: int = 750,
         dmi_period: int = 14,
         adx_period: int = 14,
@@ -93,8 +153,8 @@ class ExpectedReturnEngine:
     ):
         self.window = window
         self.expanding = bool(expanding)
-        self.linear_window = linear_window or window
-        self.sma_window = sma_window or window
+        self.linear_window = linear_window
+        self.sma_window = min(int(sma_window), 1500) if sma_window is not None else 1500
         self.beta_window = beta_window or window
         self.z_score_window = z_score_window
         self.three_year_window = three_year_window
@@ -103,19 +163,27 @@ class ExpectedReturnEngine:
         self.atr_period = atr_period
         self.linear_k = float(linear_k)
         self.atr_multiplier = float(atr_multiplier)
+
         # -------------------------------------------------------------
-        # 1. Các mô hình cho Cổ phiếu mục tiêu (P)
+        # 1. Khởi tạo SupportResistanceReversalIndicator cho cổ phiếu P
         # -------------------------------------------------------------
-        self.stock_lrc = LinearRegressionChannel(
-            window=None if self.expanding else self.linear_window,
-            k=self.linear_k,
+        self.reversal_indicator = SupportResistanceReversalIndicator(
+            linear_window=self.linear_window,
+            linear_k=self.linear_k,
+            sma_window=self.sma_window,
+            dmi_period=self.dmi_period,
+            adx_period=self.adx_period,
+            atr_period=self.atr_period,
+            atr_multiplier=self.atr_multiplier,
+            linear_expanding=True,  # Chỉ mô hình tuyến tính expand dữ liệu liên tục
+            sma_expanding=False,    # SMA cap ở 1500
             expanding=self.expanding,
         )
-        self.stock_sma = RollingStatistics(
-            window=None if self.expanding else self.sma_window,
-            expanding=self.expanding,
-        )
-        self.stock_dmi = DirectionalMovementIndex(period=self.dmi_period, adx_period=self.adx_period)
+
+        self.stock_lrc = self.reversal_indicator.linear
+        self.stock_sma = self.reversal_indicator.sma
+        self.stock_dmi = self.reversal_indicator.dmi
+
         # -------------------------------------------------------------
         # 2. Các mô hình xu hướng DMI cho DXY, EURUSD, USDVND
         # -------------------------------------------------------------
@@ -124,48 +192,34 @@ class ExpectedReturnEngine:
         self.fx_dmi = DirectionalMovementIndex(period=self.dmi_period, adx_period=self.adx_period)
 
         # -------------------------------------------------------------
-        # 3. Mô hình BETA tương quan giữa Q (6 biến) và Giá P
+        # 3. Beta model (tương thích ngược)
         # -------------------------------------------------------------
-        self.q_dim = 6
         self.beta_model = MultivariateLinearRegression(
-            n_features=self.q_dim,
+            n_features=2,
             window=None if self.expanding else self.beta_window,
             expanding=self.expanding,
             learning_rate=0.02,
         )
-        # -------------------------------------------------------------
-        # 4. Mô hình Tuyến tính (LRC) và SMA cho từng chỉ số trong Q
-        # -------------------------------------------------------------
-        self.q_lrc_models = [
-            LinearRegressionChannel(
-                window=None if self.expanding else self.linear_window,
-                k=self.linear_k,
-                expanding=self.expanding,
-            )
-            for _ in range(self.q_dim)
-        ]
-        self.q_sma_models = [
-            RollingStatistics(
-                window=None if self.expanding else self.sma_window,
-                expanding=self.expanding,
-            )
-            for _ in range(self.q_dim)
-        ]
 
         # -------------------------------------------------------------
-        # 5. Lưu trữ lịch sử giá để tính ATH, Loser ratio L, ATR, Z-scores
+        # 4. Lưu trữ lịch sử giá để tính ATH, Loser ratio, Z-scores
+        # -------------------------------------------------------------
         self._price_history: list[float] = []
         self._sorted_prices: list[float] = []
         self._ath: float = 0.0
-        z_maxlen = None if self.expanding else self.z_score_window
+
+        # Z-Score thì tùy chọn theo cấu hình người dùng (hoặc None để expand)
+        z_maxlen = int(self.z_score_window) if (self.z_score_window is not None and self.z_score_window > 0) else None
+        self._a_history: deque[float] = deque(maxlen=z_maxlen)
+        self._b_history: deque[float] = deque(maxlen=z_maxlen)
+        self._c_history: deque[float] = deque(maxlen=z_maxlen)
+        self._d_history: deque[float] = deque(maxlen=z_maxlen)
         self._e_history: deque[float] = deque(maxlen=z_maxlen)
-        self._u_history: deque[float] = deque(maxlen=z_maxlen)
-        self._l_history: deque[float] = deque(maxlen=z_maxlen)
-
-
-        # ATR computation
-        self._prev_close: float | None = None
-        self._tr_history: deque[float] = deque(maxlen=self.atr_period)
+        self._f_history: deque[float] = deque(maxlen=z_maxlen)
+        self._g_history: deque[float] = deque(maxlen=z_maxlen)
+        # Theo dõi chu kỳ tiền tệ theo tuần (Weekly Currency Data)
+        self._last_fx_week: tuple[int, int] | None = None
+        self._last_fx_values: tuple[float, float, float] | None = None
 
     def update(
         self,
@@ -181,202 +235,203 @@ class ExpectedReturnEngine:
         usdvnd_close: float,
         inflation_rate: float,
         bond_yield_10y: float,
+        date: Any = None,
     ) -> ValuationSnapshot:
         """Cập nhật dữ liệu phiên mới và trả về ValuationSnapshot."""
-        # Cập nhật ATR (Wilder True Range)
-        if self._prev_close is not None:
-            tr = max(
-                stock_high - stock_low,
-                abs(stock_high - self._prev_close),
-                abs(stock_low - self._prev_close),
-            )
-        else:
-            tr = stock_high - stock_low
-        self._prev_close = stock_close
-        self._tr_history.append(tr)
-        atr = float(np.mean(self._tr_history)) if self._tr_history else max(stock_high - stock_low, 1.0)
-
-        self._price_history.append(stock_close)
-        bisect.insort(self._sorted_prices, stock_close)
-        if stock_high > self._ath:
-            self._ath = stock_high
+        stock_open = float(stock_open)
+        stock_high = float(stock_high)
+        stock_low = float(stock_low)
+        stock_close = float(stock_close)
 
         # -------------------------------------------------------------
         # Bước 0: Tính lãi suất tiết kiệm
         # -------------------------------------------------------------
-        # Chuẩn hóa nếu rate ở đơn vị % (ví dụ 3.5 -> 0.035)
         inf_val = inflation_rate if inflation_rate < 1.0 else inflation_rate / 100.0
         by_val = bond_yield_10y if bond_yield_10y < 1.0 else bond_yield_10y / 100.0
         saving_rate = inf_val + by_val
 
         # -------------------------------------------------------------
-        # Bước 1: Tính xu hướng cho DXY, EURUSD, USDVND và lập cụm Q (6 chỉ số)
+        # Bước 1 & 2: Cập nhật ReversalIndicator, Pt (LRC) và Pr (SMA)
         # -------------------------------------------------------------
-        self.dxy_dmi.update_raw(dxy_close * 1.001, dxy_close * 0.999, dxy_close)
-        self.eur_dmi.update_raw(eurusd_close * 1.001, eurusd_close * 0.999, eurusd_close)
-        self.fx_dmi.update_raw(usdvnd_close * 1.001, usdvnd_close * 0.999, usdvnd_close)
-
-        trend_dxy = self.dxy_dmi.trend_score
-        trend_eur = self.eur_dmi.trend_score
-        trend_fx = self.fx_dmi.trend_score
-
-        # Cụm chỉ số tương quan Q gồm 6 biến:
-        # Cụm chỉ số tương quan Q gồm 6 biến (chuẩn hóa cơ số dương để tính %change an toàn):
-        # [trend(DXY), trend(EURUSD), trend(USDVND), DXY, EURUSD, saving_rate]
-        q_values = [
-            100.0 + trend_dxy,
-            100.0 + trend_eur,
-            100.0 + trend_fx,
-            dxy_close,
-            eurusd_close,
-            1.0 + saving_rate,
-        ]
-        # -------------------------------------------------------------
-        # Bước 2: Cập nhật mô hình tương quan BETA giữa Q và P
-        # -------------------------------------------------------------
-        self.beta_model.update_raw(stock_close, *q_values)
-
-        # -------------------------------------------------------------
-        # Bước 3 & 4: Tính Qt (LRC) và Qr (SMA) cho từng chỉ số trong Q
-        # -------------------------------------------------------------
-        qt_list: list[float] = []
-        qr_list: list[float] = []
-
-        for i, val in enumerate(q_values):
-            lrc_m = self.q_lrc_models[i]
-            sma_m = self.q_sma_models[i]
-            lrc_m.update_raw(val)
-            sma_m.update_raw(val)
-            qt_list.append(lrc_m.premium)
-            qr_list.append(sma_m.premium)
-
-        # -------------------------------------------------------------
-        # Bước 5 & 6: Dùng BETA suy ra Pqt và Pqr
-        # -------------------------------------------------------------
-        pqt = self.beta_model.predict(*qt_list)
-        pqr = self.beta_model.predict(*qr_list)
-
-        # -------------------------------------------------------------
-        # Bước 7 & 8: Lợi nhuận dự phóng Pt (LRC) và Pr (SMA) của cổ phiếu P
-        # -------------------------------------------------------------
-        self.stock_lrc.update_raw(stock_close)
-        self.stock_sma.update_raw(stock_close)
-        self.stock_dmi.update_raw(stock_high, stock_low, stock_close)
-
+        rev_snap = self.reversal_indicator.update_raw(
+            open_p=stock_open,
+            high_p=stock_high,
+            low_p=stock_low,
+            close_p=stock_close,
+            volume=stock_volume,
+        )
+        atr = rev_snap.atr
         pt = self.stock_lrc.premium
         pr = self.stock_sma.premium
 
+        # Cập nhật beta model phụ (cho tương thích ngược)
+        self.beta_model.update_raw(stock_close, dxy_close, usdvnd_close)
+
         # -------------------------------------------------------------
-        # Bước 9: Tính lợi suất cổ tức (D)
+        # Bước 3: Tính lợi suất cổ tức (dividend_yield)
         # -------------------------------------------------------------
         market_cap = max(stock_close * max(shares_outstanding, 1.0), 1e6)
         clean_divs = [float(d) for d in dividend_5y_history if math.isfinite(float(d)) and float(d) >= 0]
         if clean_divs:
             med_div = float(np.median(clean_divs))
-            # Nếu clean_divs là tổng tiền cổ tức hàng năm
             if med_div > 1e6:
                 dividend_yield = med_div / market_cap
             else:
-                # Nếu clean_divs là DPS (cổ tức trên 1 cổ phiếu)
                 dividend_yield = med_div / max(stock_close, 1.0)
         else:
             dividend_yield = 0.0
 
         # -------------------------------------------------------------
-        # Bước 10: Tổng hợp lợi nhuận kỳ vọng 1 năm (E)
-        # E = 0.42 * Pqr + 0.18 * Pqt + 0.28 * Pr + 0.12 * Pt + D
+        # Bước 4: Lợi nhuận kỳ vọng (A)
+        # A = 0.5 * Pt + 0.5 * Pr + dividend_yield - saving_rate
         # -------------------------------------------------------------
-        e_return = 0.42 * pqr + 0.18 * pqt + 0.28 * pr + 0.12 * pt + dividend_yield
+        expected_return = 0.5 * pt + 0.5 * pr + dividend_yield - saving_rate
 
         # -------------------------------------------------------------
-        # II. Các chỉ số bổ trợ: U (ATH Discount) và L (Loser Ratio 3y)
+        # Bước 5: Chiết khấu từ ATH (B)
         # -------------------------------------------------------------
-        u_discount = max(0.0, (self._ath - stock_close) / self._ath) if self._ath > 0 else 0.0
+        self._price_history.append(stock_close)
+        bisect.insort(self._sorted_prices, stock_close)
+        if stock_high > self._ath:
+            self._ath = stock_high
 
+        discount = max(0.0, (self._ath - stock_close) / self._ath) if self._ath > 0 else 0.0
 
+        # -------------------------------------------------------------
+        # Bước 6: Tỷ lệ loser 3 năm (C)
+        # -------------------------------------------------------------
         if self.expanding:
             idx_pos = bisect.bisect_left(self._sorted_prices, stock_close)
             loser_count = len(self._sorted_prices) - idx_pos
-            l_loser_ratio = loser_count / len(self._sorted_prices)
+            loser_ratio = loser_count / len(self._sorted_prices)
         else:
             recent_prices = self._price_history[-self.three_year_window:]
             if recent_prices:
                 loser_count = sum(1 for p in recent_prices if p >= stock_close)
-                l_loser_ratio = loser_count / len(recent_prices)
+                loser_ratio = loser_count / len(recent_prices)
             else:
-                l_loser_ratio = 0.5
+                loser_ratio = 0.5
 
-        # RMSE metrics
-        rmse_sma = self.stock_sma.std
-        rmse_linear = self.stock_lrc.rmse
         # -------------------------------------------------------------
-        self._e_history.append(e_return)
-        self._u_history.append(u_discount)
-        self._l_history.append(l_loser_ratio)
+        # Bước 7: Tín hiệu vĩ mô / tỷ giá từ DMI (D, E, F)
+        # Cập nhật DMI tiền tệ theo chu kỳ tuần (chỉ cập nhật khi bước sang tuần mới hoặc giá tỷ giá thay đổi)
+        is_new_currency_bar = False
+        if date is not None:
+            try:
+                dt_val = pd.to_datetime(date)
+                w_key = (dt_val.year, int(dt_val.isocalendar()[1]))
+                if self._last_fx_week != w_key:
+                    is_new_currency_bar = True
+                    self._last_fx_week = w_key
+            except Exception:
+                pass
 
+        curr_fx_vals = (round(float(usdvnd_close), 4), round(float(eurusd_close), 4), round(float(dxy_close), 4))
+        if not is_new_currency_bar:
+            if self._last_fx_values is None or curr_fx_vals != self._last_fx_values:
+                is_new_currency_bar = True
 
+        if is_new_currency_bar:
+            self._last_fx_values = curr_fx_vals
+            self.dxy_dmi.update_raw(dxy_close * 1.001, dxy_close * 0.999, dxy_close)
+            self.eur_dmi.update_raw(eurusd_close * 1.001, eurusd_close * 0.999, eurusd_close)
+            self.fx_dmi.update_raw(usdvnd_close * 1.001, usdvnd_close * 0.999, usdvnd_close)
+
+        trend_dxy = self.dxy_dmi.trend_score
+        trend_eur = self.eur_dmi.trend_score
+        trend_fx = self.fx_dmi.trend_score
+        trend_price = self.stock_dmi.trend_score
+
+        usdvnd_signal = -trend_fx
+        eurusd_signal = trend_eur
+        dxy_signal = -trend_dxy
+        price_signal = trend_price
+
+        # -------------------------------------------------------------
+        # Bước 8: Chấm điểm 7 Luận điểm qua sigmoid z-score
+        # -------------------------------------------------------------
+        self._a_history.append(expected_return)
+        self._b_history.append(discount)
+        self._c_history.append(loser_ratio)
+        self._d_history.append(usdvnd_signal)
+        self._e_history.append(dxy_signal)
+        self._f_history.append(eurusd_signal)
+        self._g_history.append(price_signal)
         def _calc_z_score_sigmoid(history: deque[float], current_val: float, invert: bool = False) -> float:
             n_h = len(history)
             if n_h < 3:
                 return 0.5
-            h_slice = list(history)[-250:] if n_h > 250 else history
-            mean_h = float(np.mean(h_slice))
-            std_h = float(np.std(h_slice))
+            mean_h = float(np.mean(history))
+            std_h = float(np.std(history))
             if std_h <= 1e-12:
                 return 0.5
             z = (current_val - mean_h) / std_h
             if invert:
                 z = -z
             return sigmoid(z)
-        score_e = _calc_z_score_sigmoid(self._e_history, e_return, invert=False)
-        # 2. Luận điểm 2: U chiết khấu sâu từ ATH
-        score_u = _calc_z_score_sigmoid(self._u_history, u_discount, invert=False)
-        # 3. Luận điểm 3: L tỷ lệ loser cao (cạn kiệt cung bán cắt lỗ)
-        score_l = _calc_z_score_sigmoid(self._l_history, l_loser_ratio, invert=False)
-        # 4. Luận điểm 4: self.bp trong RollingStatistics._update_probability()
-        score_bp_sma = float(self.stock_sma.bp)
-        # 5. Luận điểm 5: self.bp trong LinearRegressionChannel._update_probability()
-        score_bp_linear = float(self.stock_lrc.bp)
+
+        score_a = _calc_z_score_sigmoid(self._a_history, expected_return)
+        score_b = _calc_z_score_sigmoid(self._b_history, discount)
+        score_c = _calc_z_score_sigmoid(self._c_history, loser_ratio)
+        score_d = _calc_z_score_sigmoid(self._d_history, usdvnd_signal)
+        score_e = _calc_z_score_sigmoid(self._e_history, dxy_signal)
+        score_f = _calc_z_score_sigmoid(self._f_history, eurusd_signal)
+        score_g = _calc_z_score_sigmoid(self._g_history, price_signal)
 
         theses_flags = [
+            score_a >= 0.5,
+            score_b >= 0.5,
+            score_c >= 0.5,
+            score_d >= 0.5,
             score_e >= 0.5,
-            score_u >= 0.5,
-            score_l >= 0.5,
-            score_bp_sma >= 0.5,
-            score_bp_linear >= 0.5,
+            score_f >= 0.5,
+            score_g >= 0.5,
         ]
         theses_count = sum(1 for flag in theses_flags if flag)
 
         # -------------------------------------------------------------
-        # IV. Vùng giá gợi ý từ SMA và Mô hình Tuyến tính +/- 1 ATR
+        # Bước 9: Giá gợi ý, Hỗ trợ, Kháng cự & Ngưỡng mua/bán +/- ATR
         # -------------------------------------------------------------
         p_suggest_sma = self.stock_sma.mean if self.stock_sma.initialized else stock_close
         p_suggest_linear = self.stock_lrc.baseline if self.stock_lrc.initialized else stock_close
         p_suggest = 0.5 * (p_suggest_sma + p_suggest_linear)
 
-        buy_threshold = p_suggest + self.atr_multiplier * atr
-        sell_threshold = p_suggest - self.atr_multiplier * atr
+        # Tính toán các ngưỡng hỗ trợ, kháng cự và vùng hành động không bao giờ bị đảo ngược
+        # Bất biến: support <= buy_threshold < stock_close < sell_threshold <= resistance
+        support, buy_threshold, sell_threshold, resistance = self.reversal_indicator.get_clean_zones(stock_close)
 
         return ValuationSnapshot(
             saving_rate=saving_rate,
-            pqr=pqr,
-            pqt=pqt,
             pr=pr,
             pt=pt,
             dividend_yield=dividend_yield,
-            expected_return=e_return,
-            u_discount=u_discount,
-            l_loser_ratio=l_loser_ratio,
-            rmse_sma=rmse_sma,
-            rmse_linear=rmse_linear,
+            expected_return=expected_return,
+            discount=discount,
+            loser_ratio=loser_ratio,
+            usdvnd_signal=usdvnd_signal,
+            eurusd_signal=eurusd_signal,
+            dxy_signal=dxy_signal,
+            price_signal=price_signal,
+            score_a=score_a,
+            score_b=score_b,
+            score_c=score_c,
+            score_d=score_d,
             score_e=score_e,
-            score_u=score_u,
-            score_l=score_l,
-            score_bp_sma=score_bp_sma,
-            score_bp_linear=score_bp_linear,
+            score_f=score_f,
+            score_g=score_g,
             theses_count=theses_count,
             atr=atr,
-            p_suggest=p_suggest,
+            support=support,
+            resistance=resistance,
             buy_threshold=buy_threshold,
             sell_threshold=sell_threshold,
+            signal=rev_snap.signal,
+            trend=rev_snap.trend,
+            p_suggest=p_suggest,
+            active_support=rev_snap.active_support,
+            active_resistance=rev_snap.active_resistance,
+            plus_di=self.stock_dmi.plus_di,
+            minus_di=self.stock_dmi.minus_di,
+            adx=self.stock_dmi.adx,
+            trend_score=self.stock_dmi.trend_score,
         )

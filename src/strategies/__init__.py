@@ -10,6 +10,12 @@ from src.strategies.indicators import (
 )
 from src.strategies.nautilus_strategy import NautilusQuantitativeConfig, NautilusQuantitativeStrategy
 from src.strategies.valuation import ExpectedReturnEngine, ValuationSnapshot
+from src.strategies.execution import (
+    ExecuteEngine,
+    ExecutionResult,
+    FibonacciExecuteEngine,
+    PositionLevel,
+)
 
 __all__ = [
     "CandlestickPatternDetector",
@@ -22,4 +28,8 @@ __all__ = [
     "NautilusQuantitativeStrategy",
     "RollingStatistics",
     "ValuationSnapshot",
+    "ExecuteEngine",
+    "ExecutionResult",
+    "FibonacciExecuteEngine",
+    "PositionLevel",
 ]

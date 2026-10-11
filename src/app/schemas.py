@@ -16,16 +16,16 @@ class BacktestRunRequest(BaseModel):
     base_nav_pct: float = Field(default=0.04, description="Tỷ trọng cơ sở N% cho factor Fibonacci = 1")
     lot_size: int = Field(default=100, description="Kích thước lô giao dịch tối thiểu")
     window: int = Field(default=30, description="Cửa sổ trượt mặc định")
-    linear_window: int = Field(default=30, ge=5, le=300, description="Độ dài đường hồi quy tuyến tính (LRC)")
-    sma_window: int = Field(default=30, ge=5, le=300, description="Độ dài đường SMA thống kê")
+    linear_window: int | None = Field(default=None, description="Độ dài đường hồi quy tuyến tính (LRC, None = Expand liên tục)")
+    sma_window: int = Field(default=1500, ge=5, le=1500, description="Độ dài đường SMA thống kê (cap tối đa 1500)")
     beta_window: int = Field(default=30, ge=5, le=300, description="Độ dài cửa sổ hồi quy đa biến Beta")
-    z_score_window: int = Field(default=120, ge=10, le=500, description="Độ dài cửa sổ chuẩn hóa Z-Score")
+    z_score_window: int = Field(default=120, ge=10, le=1500, description="Độ dài cửa sổ chuẩn hóa Z-Score (tùy chọn)")
     sma20_period: int = Field(default=20, ge=2, le=100, description="Chu kỳ SMA bộ lọc xu hướng")
     atr_period: int = Field(default=14, ge=2, le=50, description="Chu kỳ ATR")
     atr_multiplier: float = Field(default=1.0, ge=0.1, le=5.0, description="Hệ số nhân ATR cho Vùng Mua/Bán (+/- N ATR)")
-    min_theses: int = Field(default=3, ge=1, le=5, description="Số luận điểm tối thiểu để kích hoạt Mua (1-5)")
+    min_theses: int = Field(default=3, ge=1, le=7, description="Số luận điểm tối thiểu để kích hoạt Mua (1-7)")
     expanding: bool = Field(default=False, description="Sử dụng cửa sổ mở rộng expanding (không giới hạn window)")
-    all_history: bool = Field(default=False, description="Backtest toàn bộ dữ liệu lịch sử (từ năm 2000 đến nay)")
+    all_history: bool = Field(default=True, description="Backtest toàn bộ dữ liệu lịch sử (từ năm 2000 đến nay)")
     use_synthetic: bool = Field(default=False, description="Sử dụng dữ liệu giả lập chuẩn hóa")
     engine_type: str = Field(default="nautilus", description="Nền tảng backtest: 'nautilus' hoặc 'direct'")
 
@@ -65,6 +65,9 @@ class TradeItem(BaseModel):
     theses_count: int
     reason: str
     nav: float
+    level: int = 1
+    pnl: float = 0.0
+    surplus_after: float = 0.0
 
 
 class BacktestSummaryMetrics(BaseModel):
@@ -91,6 +94,8 @@ class BacktestRunResponse(BaseModel):
     summary: BacktestSummaryMetrics
     candles: list[CandleBar]
     p_suggest: list[LinePoint]
+    support: list[LinePoint] = []
+    resistance: list[LinePoint] = []
     buy_threshold: list[LinePoint]
     sell_threshold: list[LinePoint]
     sma20: list[LinePoint]
@@ -101,8 +106,14 @@ class BacktestRunResponse(BaseModel):
     pt_series: list[LinePoint] = []
     div_yield_series: list[LinePoint] = []
     theses_count: list[LinePoint]
+    loser_ratio: list[LinePoint] = []
     equity_curve: list[LinePoint]
     benchmark_curve: list[LinePoint]
     drawdown_curve: list[LinePoint] = []
+    plus_di: list[LinePoint] = []
+    minus_di: list[LinePoint] = []
+    adx: list[LinePoint] = []
+    position_shares: list[LinePoint] = []
+    position_level: list[LinePoint] = []
     markers: list[ChartMarker]
     trades: list[TradeItem]

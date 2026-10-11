@@ -64,15 +64,29 @@ def generate_synthetic_strategy_dataset(
         dates = pd.date_range(start_date, periods=n_bars, freq="B")
 
     np.random.seed((sym_hash * 997 + n_bars) % 1_000_000)
-    # Mô phỏng các biến số vĩ mô
-    r_dxy = np.random.normal(0.0001, 0.004, n_bars)
-    r_eur = -0.85 * r_dxy + np.random.normal(0.0, 0.003, n_bars)
-    r_fx = 0.35 * r_dxy + np.random.normal(0.0001, 0.0015, n_bars)
-    r_vni = -0.40 * r_dxy + np.random.normal(0.0005, 0.012, n_bars)
+    # Mô phỏng các biến số tiền tệ theo chu kỳ tuần (Weekly Currency Data)
+    week_keys = pd.Series([d.year * 100 + d.isocalendar()[1] for d in dates])
+    unique_weeks = week_keys.unique()
+    n_weeks = len(unique_weeks)
 
-    p_dxy = 98.0 * np.exp(np.cumsum(r_dxy))
-    p_eur = 1.12 * np.exp(np.cumsum(r_eur))
-    p_fx = 23100.0 * np.exp(np.cumsum(r_fx))
+    r_dxy_w = np.random.normal(0.0005, 0.008, n_weeks)
+    r_eur_w = -0.85 * r_dxy_w + np.random.normal(0.0, 0.006, n_weeks)
+    r_fx_w = 0.35 * r_dxy_w + np.random.normal(0.0003, 0.003, n_weeks)
+
+    p_dxy_w = 98.0 * np.exp(np.cumsum(r_dxy_w))
+    p_eur_w = 1.12 * np.exp(np.cumsum(r_eur_w))
+    p_fx_w = 23100.0 * np.exp(np.cumsum(r_fx_w))
+
+    map_dxy = dict(zip(unique_weeks, p_dxy_w))
+    map_eur = dict(zip(unique_weeks, p_eur_w))
+    map_fx = dict(zip(unique_weeks, p_fx_w))
+
+    p_dxy = week_keys.map(map_dxy).values
+    p_eur = week_keys.map(map_eur).values
+    p_fx = week_keys.map(map_fx).values
+
+    # VN-Index biến thiên theo ngày
+    r_vni = -0.40 * np.random.normal(0.0001, 0.004, n_bars) + np.random.normal(0.0005, 0.012, n_bars)
     p_vni = 1100.0 * np.exp(np.cumsum(r_vni))
 
     # Lãi suất TPCP 10Y và Lạm phát CPI biến thiên chu kỳ
@@ -81,6 +95,7 @@ def generate_synthetic_strategy_dataset(
     bond_yield_series = 2.6 + 0.6 * np.cos(t_arr) + np.random.normal(0, 0.05, n_bars)
 
     # Cổ phiếu mục tiêu có độ nhạy Beta và drift theo hồ sơ riêng của mã
+    r_fx = pd.Series(p_fx).pct_change().fillna(0.0).values
     r_stock = 0.0003 + stock_beta * r_vni - 0.20 * r_fx + np.random.normal(0.0, 0.008, n_bars)
     p_close = stock_base_price * np.exp(np.cumsum(r_stock))
 
@@ -155,12 +170,12 @@ def load_strategy_dataset(
             except Exception:
                 div_history = [2000.0, 2000.0, 2000.0, 2500.0, 2500.0]
 
-        print("  [Data Pipeline] Đang lấy dữ liệu từ YahooFinanceFetcher (EURUSD, DXY, USDVND)...")
+        print("  [Data Pipeline] Đang lấy dữ liệu từ YahooFinanceFetcher (EURUSD, DXY, USDVND - dữ liệu tuần 1w)...")
         with YahooFinanceFetcher() as yf:
-            df_eur = yf.get_ohlcv("EUR/USD", interval="1d", start_date=start_date, end_date=end_date)
-            df_fx = yf.get_ohlcv("USD/VND", interval="1d", start_date=start_date, end_date=end_date)
+            df_eur = yf.get_ohlcv("EUR/USD", interval="1w", start_date=start_date, end_date=end_date)
+            df_fx = yf.get_ohlcv("USD/VND", interval="1w", start_date=start_date, end_date=end_date)
             try:
-                df_dxy = yf.get_ohlcv("DXY", interval="1d", start_date=start_date, end_date=end_date)
+                df_dxy = yf.get_ohlcv("DXY", interval="1w", start_date=start_date, end_date=end_date)
             except Exception:
                 df_dxy = pd.DataFrame()
 
@@ -188,21 +203,25 @@ def load_strategy_dataset(
         else:
             merged["vnindex"] = 1200.0
 
-        df_fx["d"] = pd.to_datetime(df_fx.index).date
-        merged = merged.merge(df_fx[["d", "close"]].rename(columns={"close": "usdvnd"}), on="d", how="left")
+        def _align_weekly_fx(daily_df: pd.DataFrame, weekly_df: pd.DataFrame, col_name: str, default_val: float) -> pd.Series:
+            if weekly_df is None or weekly_df.empty or "close" not in weekly_df.columns:
+                return pd.Series(default_val, index=daily_df.index, name=col_name)
+            daily_dates = pd.DatetimeIndex(pd.to_datetime(daily_df["d"]))
+            weekly_s = weekly_df["close"].copy()
+            if weekly_s.index.tz is not None:
+                weekly_s.index = weekly_s.index.tz_convert(None)
+            weekly_index = pd.DatetimeIndex(pd.to_datetime(weekly_s.index))
+            weekly_s.index = weekly_index
+            all_idx = daily_dates.union(weekly_index).sort_values()
+            reindexed = weekly_s.reindex(all_idx).ffill().bfill()
+            matched = reindexed.loc[daily_dates]
+            matched.index = daily_df.index
+            matched.name = col_name
+            return matched
 
-        if not df_eur.empty:
-            df_eur["d"] = pd.to_datetime(df_eur.index).date
-            merged = merged.merge(df_eur[["d", "close"]].rename(columns={"close": "eurusd"}), on="d", how="left")
-        else:
-            merged["eurusd"] = 1.08
-
-        if not df_dxy.empty:
-            df_dxy["d"] = pd.to_datetime(df_dxy.index).date
-            merged = merged.merge(df_dxy[["d", "close"]].rename(columns={"close": "dxy"}), on="d", how="left")
-        else:
-            # Ước lượng xấp xỉ DXY từ EURUSD nếu không có
-            merged["dxy"] = 104.0
+        merged["usdvnd"] = _align_weekly_fx(merged, df_fx, "usdvnd", 23100.0)
+        merged["eurusd"] = _align_weekly_fx(merged, df_eur, "eurusd", 1.08)
+        merged["dxy"] = _align_weekly_fx(merged, df_dxy, "dxy", 104.0)
 
         # Lạm phát và Lợi suất trái phiếu
         if not df_inf.empty and "value" in df_inf.columns:

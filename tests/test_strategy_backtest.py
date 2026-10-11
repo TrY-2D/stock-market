@@ -74,22 +74,21 @@ def test_expected_return_engine_and_scoring():
     # Kiểm tra các thành phần tính toán
     assert snapshot.saving_rate == pytest.approx(0.06, abs=1e-4)  # 3.5% + 2.5% = 6.0%
     assert snapshot.atr > 0.0
-    assert snapshot.buy_threshold > snapshot.p_suggest
-    assert snapshot.sell_threshold < snapshot.p_suggest
+    assert snapshot.support <= snapshot.buy_threshold < c < snapshot.sell_threshold <= snapshot.resistance
     assert 0.0 <= snapshot.u_discount <= 1.0
     assert 0.0 <= snapshot.l_loser_ratio <= 1.0
     assert 0.0 <= snapshot.score_bp_sma <= 1.0
     assert 0.0 <= snapshot.score_bp_linear <= 1.0
-    assert 0 <= snapshot.theses_count <= 5
-    # Kiểm tra công thức tổng hợp lợi nhuận kỳ vọng 1 năm (E)
-    expected_e = (
-        0.42 * snapshot.pqr
-        + 0.18 * snapshot.pqt
-        + 0.28 * snapshot.pr
-        + 0.12 * snapshot.pt
+    assert 0 <= snapshot.theses_count <= 7
+    # Kiểm tra công thức tổng hợp lợi nhuận kỳ vọng 1 năm (A)
+    # A = 0.5 * Pt + 0.5 * Pr + dividend_yield - saving_rate
+    expected_a = (
+        0.5 * snapshot.pt
+        + 0.5 * snapshot.pr
         + snapshot.dividend_yield
+        - snapshot.saving_rate
     )
-    assert pytest.approx(snapshot.expected_return, abs=1e-6) == expected_e
+    assert pytest.approx(snapshot.expected_return, abs=1e-6) == expected_a
 
 
 def test_quantitative_backtest_execution():
@@ -131,7 +130,8 @@ def test_expanding_window_engine_and_all_history():
     # Test ExpectedReturnEngine with expanding=True
     engine = ExpectedReturnEngine(expanding=True)
     assert engine.expanding
-    assert engine.stock_sma.expanding
+    assert not engine.stock_sma.expanding
+    assert engine.stock_sma.window <= 1500
     assert engine.stock_lrc.expanding
     assert engine.beta_model.expanding
 
@@ -145,7 +145,7 @@ def test_expanding_window_engine_and_all_history():
             inflation_rate=r["inflation"], bond_yield_10y=r["bond_yield_10y"],
         )
 
-    assert snap.theses_count in range(6)
+    assert snap.theses_count in range(8)
     assert engine.stock_sma.initialized
     assert engine.stock_lrc.initialized
     assert engine.beta_model.initialized
@@ -159,3 +159,53 @@ def test_expanding_window_engine_and_all_history():
     res = backtest_engine.run(market_data=df_all.iloc[:100], shares_outstanding=shares, dividend_history=divs)
     assert res.final_nav > 0
     assert len(res.equity_curve) == 100
+
+def test_backtest_with_explicit_v0():
+    df, shares, divs = generate_synthetic_strategy_dataset(n_bars=80, initial_stock_price=50000.0)
+    engine = QuantitativeBacktestEngine(
+        initial_cash=1_000_000_000.0,
+        v0=500,
+        lot_size=100,
+    )
+    res = engine.run(market_data=df, shares_outstanding=shares, dividend_history=divs)
+    assert res.final_nav > 0
+    for t in res.trades_log:
+        assert t.shares % 100 == 0
+
+
+def test_backtest_trade_record_fields():
+    df, shares, divs = generate_synthetic_strategy_dataset(n_bars=120, initial_stock_price=45000.0)
+    engine = QuantitativeBacktestEngine(
+        initial_cash=1_000_000_000.0,
+        base_nav_pct=0.04,
+    )
+    res = engine.run(market_data=df, shares_outstanding=shares, dividend_history=divs)
+    for t in res.trades_log:
+        assert 1 <= t.level <= 6
+        assert hasattr(t, "pnl")
+        assert hasattr(t, "surplus_after")
+        assert t.nav_after > 0
+
+def test_linear_expanding_and_sma_capped():
+    engine = ExpectedReturnEngine(sma_window=2000, z_score_window=120)
+    assert engine.stock_lrc.expanding
+    assert not engine.stock_sma.expanding
+    assert engine.stock_sma.window == 1500  # Capped at 1500
+    assert engine._a_history.maxlen == 120   # Configurable z-score
+
+    # Feed 1600 bars to verify buffer behavior
+    for i in range(1600):
+        c = 50000.0 + i * 10.0
+        engine.update(
+            stock_open=c, stock_high=c + 100, stock_low=c - 100, stock_close=c,
+            stock_volume=1_000_000, shares_outstanding=1_000_000_000,
+            dividend_5y_history=[2000.0], eurusd_close=1.08, dxy_close=104.0,
+            usdvnd_close=25000.0, inflation_rate=3.5, bond_yield_10y=2.5,
+        )
+
+    # Linear expands continuously past 1500
+    assert len(engine.stock_lrc._buffer) == 1600
+    # SMA is capped at 1500
+    assert len(engine.stock_sma._buffer) == 1500
+    # Z-score deque is capped at 120
+    assert len(engine._a_history) == 120

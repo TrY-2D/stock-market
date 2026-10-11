@@ -80,8 +80,8 @@ def print_backtest_report(result: BacktestResult, symbol: str) -> None:
     print("\n3. THỐNG KÊ LỆNH & GIAO DỊCH FIBONACCI:")
     print("-" * 84)
     print(f"  * Tổng số lệnh thực thi              : {result.total_trades:>18d} lệnh")
-    print(f"  * Số lệnh MUA (Fibonacci 1,1,2,3,5)  : {result.buy_trades:>18d} lệnh")
-    print(f"  * Số lệnh BÁN (Fibonacci 5,3,2,1,1)  : {result.sell_trades:>18d} lệnh")
+    print(f"  * Số lệnh MUA (Fibonacci 1,1,2,3,5,8): {result.buy_trades:>18d} lệnh")
+    print(f"  * Số lệnh BÁN (Fibonacci 8,5,3,2,1,1): {result.sell_trades:>18d} lệnh")
     print(f"  * Tỷ lệ lệnh chốt lời (Win Rate)     : {result.win_rate_pct:>18.2f} %")
     print(f"  * Hệ số Lợi nhuận / Rủi ro (PF)      : {result.profit_factor:>18.2f}")
 
@@ -92,7 +92,7 @@ def print_backtest_report(result: BacktestResult, symbol: str) -> None:
     for t in result.trades_log[-10:]:
         print(
             f"  {t.date:<12} | {t.action:<5} | {t.price:>9,.0f} | {t.shares:>7,d} | "
-            f"{t.factor:>6d} | {t.theses_count:>7d}/5 | {t.nav_after:>16,.0f} VNĐ"
+            f"{t.factor:>6d} | {t.theses_count:>7d}/7 | {t.nav_after:>16,.0f} VNĐ"
         )
     print("=" * 84)
 
@@ -101,24 +101,31 @@ def plot_backtest_dashboard(
     result: BacktestResult,
     symbol: str,
     save_path: str | None = None,
+    show: bool = True,
 ) -> None:
     """Vẽ bảng điều khiển đồ thị kết quả backtest 4 tầng trực quan."""
     eq_df = result.equity_curve
     dates = pd.to_datetime(eq_df["date"])
 
-    fig, axs = plt.subplots(4, 1, figsize=(14, 13), sharex=True)
+    fig, axs = plt.subplots(5, 1, figsize=(14, 16), sharex=True)
 
     # -----------------------------------------------------------------
-    # Tầng 1: Giá Cổ Phiếu, Vùng Mua / Bán (+/- 1 ATR) & Điểm Khớp Lệnh
+    # Tầng 1: Giá Cổ Phiếu, Hỗ trợ S, Kháng cự R, Vùng [S, S+ATR], [R-ATR, R]
     # -----------------------------------------------------------------
     ax0 = axs[0]
     ax0.plot(dates, eq_df["price"], label=f"{symbol} Close Price", color="black", lw=1.5)
-    ax0.plot(dates, eq_df["p_suggest"], label="P_suggest (Mean LRC & SMA)", color="blue", ls="--", lw=1.2)
-    ax0.plot(dates, eq_df["buy_threshold"], label="Buy Zone Upper (P_suggest + 1 ATR)", color="green", ls=":", alpha=0.8)
-    ax0.plot(dates, eq_df["sell_threshold"], label="Sell Zone Lower (P_suggest - 1 ATR)", color="red", ls=":", alpha=0.8)
+    if "support" in eq_df.columns:
+        ax0.plot(dates, eq_df["support"], label="Hỗ trợ (S)", color="#059669", lw=1.2, ls="-")
+    ax0.plot(dates, eq_df["buy_threshold"], label="Biên trên Hỗ trợ (S_upper)", color="#10b981", ls=":", lw=1.0, alpha=0.8)
+    if "resistance" in eq_df.columns:
+        ax0.plot(dates, eq_df["resistance"], label="Kháng cự (R)", color="#dc2626", lw=1.2, ls="-")
+    ax0.plot(dates, eq_df["sell_threshold"], label="Biên dưới Kháng cự (R_lower)", color="#f43f5e", ls=":", lw=1.0, alpha=0.8)
+    ax0.plot(dates, eq_df["p_suggest"], label="P_suggest (Mean LRC & SMA)", color="#0284c7", ls="--", lw=1.0, alpha=0.7)
 
-    ax0.fill_between(dates, eq_df["buy_threshold"], eq_df["price"], where=eq_df["price"] <= eq_df["buy_threshold"], color="green", alpha=0.1)
-    ax0.fill_between(dates, eq_df["price"], eq_df["sell_threshold"], where=eq_df["price"] >= eq_df["sell_threshold"], color="red", alpha=0.1)
+    if "support" in eq_df.columns:
+        ax0.fill_between(dates, eq_df["support"], eq_df["buy_threshold"], color="#10b981", alpha=0.15, label="Vùng Hỗ trợ")
+    if "resistance" in eq_df.columns:
+        ax0.fill_between(dates, eq_df["sell_threshold"], eq_df["resistance"], color="#f43f5e", alpha=0.15, label="Vùng Kháng cự")
 
     # Điểm Mua / Bán
     buy_dates, buy_prices = [], []
@@ -133,59 +140,75 @@ def plot_backtest_dashboard(
             sell_prices.append(t.price)
 
     if buy_dates:
-        ax0.scatter(buy_dates, buy_prices, color="green", marker="^", s=90, label="BUY Execution (Fibonacci)", zorder=5)
+        ax0.scatter(buy_dates, buy_prices, color="#10b981", marker="^", s=90, label="BUY (Fibonacci)", zorder=5)
     if sell_dates:
-        ax0.scatter(sell_dates, sell_prices, color="red", marker="v", s=90, label="SELL Execution (Fibonacci)", zorder=5)
+        ax0.scatter(sell_dates, sell_prices, color="#f43f5e", marker="v", s=90, label="SELL (Fibonacci)", zorder=5)
 
-    ax0.set_title(f"1. {symbol} Stock Price, Suggested Action Zones (+/- 1 ATR) & Execution Points", fontsize=11, fontweight="bold")
-    ax0.legend(loc="upper left")
+    ax0.set_title(f"1. {symbol} Price, Support S, Resistance R, Zones [S, S+ATR], [R-ATR, R] & Executions", fontsize=11, fontweight="bold")
+    ax0.legend(loc="upper left", ncol=3, fontsize=9)
     ax0.grid(True, alpha=0.3)
 
     # -----------------------------------------------------------------
-    # Tầng 2: Điểm Số Luận Điểm & Lợi Nhuận Dự Phóng Kỳ Vọng (E)
+    # Tầng 2: Chỉ Báo DMI (+DI, -DI, ADX)
     # -----------------------------------------------------------------
     ax1 = axs[1]
-    ax1_twin = ax1.twinx()
-
-    ax1.plot(dates, eq_df["expected_return"] * 100.0, label="Expected Return E (%/year)", color="purple", lw=1.4)
-    ax1.axhline(0.0, color="gray", lw=0.8, ls="--")
-
-    ax1_twin.step(dates, eq_df["theses_count"], label="Valid Theses Count (out of 5)", color="orange", lw=1.2, where="mid")
-    ax1_twin.axhline(3.0, color="darkgreen", ls=":", lw=1.5, label="Buy Trigger Threshold (3/5 Theses)")
-    ax1_twin.set_ylim(-0.5, 5.5)
-
-    ax1.set_title("2. Comprehensive Expected Return E & 5-Thesis Score Evaluation", fontsize=11, fontweight="bold")
-    ax1.legend(loc="upper left")
-    ax1_twin.legend(loc="upper right")
+    if "plus_di" in eq_df.columns and "minus_di" in eq_df.columns and "adx" in eq_df.columns:
+        ax1.plot(dates, eq_df["plus_di"], label="+DI", color="#10b981", lw=1.4)
+        ax1.plot(dates, eq_df["minus_di"], label="-DI", color="#f43f5e", lw=1.4)
+        ax1.plot(dates, eq_df["adx"], label="ADX", color="#f59e0b", lw=1.6)
+        ax1.axhline(25.0, color="#64748b", lw=0.9, ls="--", label="Ngưỡng Trend (25)")
+    ax1.set_title("2. Directional Movement Index (DMI & ADX 14)", fontsize=11, fontweight="bold")
+    ax1.legend(loc="upper left", ncol=4, fontsize=9)
     ax1.grid(True, alpha=0.3)
 
     # -----------------------------------------------------------------
-    # Tầng 3: Phân Bổ Cổ Phiếu Theo Fibonacci & Tiền Mặt
+    # Tầng 3: Lợi Nhuận Kỳ Vọng (E) & Luận Điểm
     # -----------------------------------------------------------------
     ax2 = axs[2]
     ax2_twin = ax2.twinx()
 
-    ax2.bar(dates, eq_df["shares_held"], label="Shares Held (Fibonacci Tranches)", color="steelblue", alpha=0.5, width=1.5)
-    ax2_twin.plot(dates, eq_df["cash"] / 1e6, label="Cash Balance (Million VNĐ)", color="darkgreen", lw=1.2, ls="--")
+    ax2.plot(dates, eq_df["expected_return"] * 100.0, label="Expected Return E (%/year)", color="#a855f7", lw=1.4)
+    ax2.axhline(0.0, color="gray", lw=0.8, ls="--")
 
-    ax2.set_title("3. Fibonacci Tranche Asset Accumulation & Portfolio Cash Balance", fontsize=11, fontweight="bold")
-    ax2.legend(loc="upper left")
-    ax2_twin.legend(loc="upper right")
+    ax2_twin.step(dates, eq_df["theses_count"], label="Valid Theses (out of 7)", color="#f97316", lw=1.2, where="mid")
+    ax2_twin.axhline(4.0, color="#10b981", ls=":", lw=1.5, label="Buy Trigger (>= 4 Theses)")
+    ax2_twin.set_ylim(-0.5, 7.5)
+
+    ax2.set_title("3. Expected Return E & 7-Thesis Evaluation (incl. Price Trend)", fontsize=11, fontweight="bold")
+    ax2.legend(loc="upper left", fontsize=9)
+    ax2_twin.legend(loc="upper right", fontsize=9)
     ax2.grid(True, alpha=0.3)
 
     # -----------------------------------------------------------------
-    # Tầng 4: Đường Cong Tăng Trưởng NAV (Equity Curve) vs Benchmark
+    # Tầng 4: Quy Mô Vị Thế (Position Size) & Cấp Lệnh Fibonacci
     # -----------------------------------------------------------------
     ax3 = axs[3]
+    ax3_twin = ax3.twinx()
+
+    pos_col = "position_shares" if "position_shares" in eq_df.columns else "shares_held"
+    ax3.bar(dates, eq_df[pos_col], label="Position Shares (Fibonacci)", color="#0284c7", alpha=0.5, width=1.5)
+    if "position_level" in eq_df.columns:
+        ax3_twin.step(dates, eq_df["position_level"], label="Fibonacci Level (1-6)", color="#c084fc", lw=1.3, where="mid")
+        ax3_twin.set_ylim(-0.2, 6.5)
+
+    ax3.set_title("4. Position Size (Shares) & Fibonacci Execution Level", fontsize=11, fontweight="bold")
+    ax3.legend(loc="upper left", fontsize=9)
+    ax3_twin.legend(loc="upper right", fontsize=9)
+    ax3.grid(True, alpha=0.3)
+
+    # -----------------------------------------------------------------
+    # Tầng 5: Đường Cong Tăng Trưởng NAV (Equity Curve) vs Benchmark
+    # -----------------------------------------------------------------
+    ax4 = axs[4]
     nav_mil = eq_df["nav"] / 1e6
     bench_mil = eq_df["benchmark_nav"] / 1e6
 
-    ax3.plot(dates, nav_mil, label=f"Strategy Equity Curve (NAV: {result.total_return_pct:+.1f}%)", color="darkblue", lw=2.0)
-    ax3.plot(dates, bench_mil, label=f"Benchmark Buy & Hold ({result.benchmark_return_pct:+.1f}%)", color="gray", lw=1.2, ls=":")
+    ax4.plot(dates, nav_mil, label=f"NAV ({result.total_return_pct:+.1f}%)", color="#2563eb", lw=2.0)
+    ax4.plot(dates, bench_mil, label=f"Benchmark ({result.benchmark_return_pct:+.1f}%)", color="#64748b", lw=1.2, ls=":")
 
-    ax3.set_title("4. Portfolio Net Asset Value (NAV in Million VNĐ) vs Buy & Hold Benchmark", fontsize=11, fontweight="bold")
-    ax3.legend(loc="upper left")
-    ax3.grid(True, alpha=0.3)
+    ax4.set_title("5. Net Asset Value (NAV in Million VNĐ) vs Buy & Hold Benchmark", fontsize=11, fontweight="bold")
+    ax4.legend(loc="upper left", fontsize=9)
+    ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
@@ -193,7 +216,10 @@ def plot_backtest_dashboard(
         fig.savefig(save_path, bbox_inches="tight", dpi=150)
         print(f"\n  => Đã lưu thành công biểu đồ backtest tại: {save_path}")
 
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def main() -> None:
@@ -202,18 +228,18 @@ def main() -> None:
     parser.add_argument("--start", type=str, default="2021-01-01", help="Ngày bắt đầu (mặc định: 2021-01-01)")
     parser.add_argument("--end", type=str, default="2024-07-31", help="Ngày kết thúc (mặc định: 2024-07-31)")
     parser.add_argument("--initial-cash", type=float, default=1_000_000_000.0, help="Vốn tiền mặt ban đầu (VNĐ, mặc định: 1 tỷ)")
-    parser.add_argument("--base-nav-pct", type=float, default=0.04, help="Tỷ trọng NAV cơ sở N% cho factor=1 (mặc định: 0.04 = 4%)")
+    parser.add_argument("--base-nav-pct", type=float, default=0.04, help="Tỷ trọng NAV cơ sở N%% cho factor=1 (mặc định: 0.04 = 4%%)")
     parser.add_argument("--synthetic", action="store_true", help="Bắt buộc sử dụng dữ liệu giả lập 3 năm (~750 phiên)")
     parser.add_argument("--plot", action="store_true", help="Hiển thị giao diện đồ thị kết quả")
     parser.add_argument("--save", type=str, default=None, help="Đường dẫn lưu file ảnh biểu đồ (ví dụ: demo/backtest.png)")
     parser.add_argument("--window", type=int, default=30, help="Cửa sổ trượt mặc định (mặc định: 30)")
-    parser.add_argument("--linear-window", type=int, default=None, help="Độ dài đường hồi quy tuyến tính LRC")
-    parser.add_argument("--sma-window", type=int, default=None, help="Độ dài đường SMA thống kê")
+    parser.add_argument("--linear-window", type=int, default=None, help="Độ dài đường hồi quy tuyến tính LRC (mặc định: None = Expand liên tục)")
+    parser.add_argument("--sma-window", type=int, default=None, help="Độ dài đường SMA thống kê (cap tối đa 1500, mặc định: 1500)")
     parser.add_argument("--beta-window", type=int, default=None, help="Độ dài cửa sổ hồi quy đa biến Beta")
-    parser.add_argument("--z-score-window", type=int, default=120, help="Độ dài cửa sổ chuẩn hóa Z-Score")
+    parser.add_argument("--z-score-window", type=int, default=120, help="Độ dài cửa sổ chuẩn hóa Z-Score (tùy chọn, mặc định: 120)")
     parser.add_argument("--sma20-period", type=int, default=20, help="Chu kỳ SMA bộ lọc xu hướng")
     parser.add_argument("--atr-mult", type=float, default=1.0, help="Hệ số nhân ATR vùng mua/bán")
-    parser.add_argument("--min-theses", type=int, default=3, help="Số luận điểm tối thiểu để kích hoạt Mua (1-5)")
+    parser.add_argument("--min-theses", type=int, default=4, help="Số luận điểm tối thiểu để kích hoạt Mua (1-7, mặc định: 4)")
     parser.add_argument("--expanding", action="store_true", help="Sử dụng cửa sổ mở rộng expanding (không giới hạn window)")
     parser.add_argument("--all-history", action="store_true", help="Backtest toàn bộ dữ liệu lịch sử (từ năm 2000 đến nay)")
     parser.add_argument(
@@ -293,7 +319,7 @@ def main() -> None:
     # 4. Vẽ đồ thị nếu được yêu cầu hoặc có file lưu
     if args.plot or args.save:
         try:
-            plot_backtest_dashboard(result, symbol=args.symbol, save_path=args.save)
+            plot_backtest_dashboard(result, symbol=args.symbol, save_path=args.save, show=args.plot)
         except Exception as exc:
             print(f"  [Cảnh báo biểu đồ] Không thể mở cửa sổ GUI ({exc}).")
 

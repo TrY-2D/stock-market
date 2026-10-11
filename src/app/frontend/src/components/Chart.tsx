@@ -3,23 +3,26 @@ import {
   createChart,
   CandlestickSeries,
   LineSeries,
-  LineStyle,
-  createSeriesMarkers,
   ColorType,
   CrosshairMode,
+  LineStyle,
+  createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
-  type Time,
   type SeriesMarker,
+  type Time,
   type LogicalRange,
   type MouseEventParams,
 } from 'lightweight-charts';
 import { chartSync } from '../chartSync';
 import type { CandleBar, ChartMarker, LinePoint } from '../types';
+
 interface ChartProps {
   bars: CandleBar[];
   markers: ChartMarker[];
   pSuggestSeries: LinePoint[];
+  supportSeries?: LinePoint[];
+  resistanceSeries?: LinePoint[];
   buyThresholdSeries: LinePoint[];
   sellThresholdSeries: LinePoint[];
   sma20Series: LinePoint[];
@@ -31,6 +34,8 @@ export const Chart: React.FC<ChartProps> = ({
   bars,
   markers,
   pSuggestSeries,
+  supportSeries = [],
+  resistanceSeries = [],
   buyThresholdSeries,
   sellThresholdSeries,
   sma20Series,
@@ -41,15 +46,17 @@ export const Chart: React.FC<ChartProps> = ({
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const pSuggestSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const supportSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const buyThreshSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const resistanceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const sellThreshSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const sma20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const markersPrimitiveRef = useRef<{ setMarkers: (m: SeriesMarker<Time>[]) => void } | null>(null);
 
   // Toggle layer visibility
   const [showPSuggest, setShowPSuggest] = useState<boolean>(true);
-  const [showBuyZone, setShowBuyZone] = useState<boolean>(true);
-  const [showSellZone, setShowSellZone] = useState<boolean>(true);
+  const [showSupportZone, setShowSupportZone] = useState<boolean>(true);
+  const [showResistanceZone, setShowResistanceZone] = useState<boolean>(true);
   const [showSMA20, setShowSMA20] = useState<boolean>(true);
   const [showMarkers, setShowMarkers] = useState<boolean>(true);
 
@@ -93,40 +100,63 @@ export const Chart: React.FC<ChartProps> = ({
       wickDownColor: '#f23645',
     });
 
+    // P_suggest (Blue dashed)
     pSuggestSeriesRef.current = chart.addSeries(LineSeries, {
-      color: 'rgba(56, 189, 248, 0.65)',
+      color: 'rgba(56, 189, 248, 0.75)',
       lineWidth: 2,
       lineStyle: LineStyle.Dashed,
-      title: '',
+      title: 'P_suggest',
       priceLineVisible: false,
       lastValueVisible: false,
     });
 
-    buyThreshSeriesRef.current = chart.addSeries(LineSeries, {
-      color: 'rgba(52, 211, 153, 0.45)',
-      lineWidth: 1,
-      lineStyle: LineStyle.Dotted,
-      title: '',
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-
-    sellThreshSeriesRef.current = chart.addSeries(LineSeries, {
-      color: 'rgba(251, 113, 133, 0.45)',
-      lineWidth: 1,
-      lineStyle: LineStyle.Dotted,
-      title: '',
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-
-    sma20SeriesRef.current = chart.addSeries(LineSeries, {
-      color: 'rgba(251, 191, 36, 0.60)',
+    // Support S (Green solid)
+    supportSeriesRef.current = chart.addSeries(LineSeries, {
+      color: '#10b981',
       lineWidth: 2,
-      title: '',
+      lineStyle: LineStyle.Solid,
+      title: 'Hỗ Trợ (S)',
       priceLineVisible: false,
       lastValueVisible: false,
     });
+    // Support zone upper S_top (Green dotted)
+    buyThreshSeriesRef.current = chart.addSeries(LineSeries, {
+      color: 'rgba(52, 211, 153, 0.75)',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      title: 'Biên Trên Hỗ Trợ',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    // Resistance R (Red solid)
+    resistanceSeriesRef.current = chart.addSeries(LineSeries, {
+      color: '#f43f5e',
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      title: 'Kháng Cự (R)',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    // Resistance zone lower R_bottom (Red dotted)
+    sellThreshSeriesRef.current = chart.addSeries(LineSeries, {
+      color: 'rgba(251, 113, 133, 0.75)',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      title: 'Biên Dưới Kháng Cự',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    // SMA 20 (Amber line)
+    sma20SeriesRef.current = chart.addSeries(LineSeries, {
+      color: 'rgba(251, 191, 36, 0.75)',
+      lineWidth: 2,
+      title: 'SMA 20',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
     // Register with ChartSyncManager
     const dataMap = new Map<number, number>();
     bars.forEach((b) => dataMap.set(b.time, b.close));
@@ -147,7 +177,6 @@ export const Chart: React.FC<ChartProps> = ({
     };
     chart.subscribeCrosshairMove(onCrosshairMove);
 
-    // Handle responsive container resize
     const handleResize = () => {
       if (chartContainerRef.current && chartRef.current) {
         chartRef.current.applyOptions({
@@ -176,12 +205,14 @@ export const Chart: React.FC<ChartProps> = ({
   }, [showPSuggest]);
 
   useEffect(() => {
-    buyThreshSeriesRef.current?.applyOptions({ visible: showBuyZone });
-  }, [showBuyZone]);
+    supportSeriesRef.current?.applyOptions({ visible: showSupportZone });
+    buyThreshSeriesRef.current?.applyOptions({ visible: showSupportZone });
+  }, [showSupportZone]);
 
   useEffect(() => {
-    sellThreshSeriesRef.current?.applyOptions({ visible: showSellZone });
-  }, [showSellZone]);
+    resistanceSeriesRef.current?.applyOptions({ visible: showResistanceZone });
+    sellThreshSeriesRef.current?.applyOptions({ visible: showResistanceZone });
+  }, [showResistanceZone]);
 
   useEffect(() => {
     sma20SeriesRef.current?.applyOptions({ visible: showSMA20 });
@@ -201,9 +232,6 @@ export const Chart: React.FC<ChartProps> = ({
           close: b.close,
         }))
       );
-      chartRef.current?.timeScale().fitContent();
-    } else {
-      candleSeriesRef.current.setData([]);
     }
 
     const dataMap = new Map<number, number>();
@@ -216,9 +244,21 @@ export const Chart: React.FC<ChartProps> = ({
       );
     }
 
+    if (supportSeriesRef.current) {
+      supportSeriesRef.current.setData(
+        (supportSeries || []).filter((p) => Number.isFinite(p.value)).map((p) => ({ time: p.time as unknown as Time, value: p.value }))
+      );
+    }
+
     if (buyThreshSeriesRef.current) {
       buyThreshSeriesRef.current.setData(
         (buyThresholdSeries || []).filter((p) => Number.isFinite(p.value)).map((p) => ({ time: p.time as unknown as Time, value: p.value }))
+      );
+    }
+
+    if (resistanceSeriesRef.current) {
+      resistanceSeriesRef.current.setData(
+        (resistanceSeries || []).filter((p) => Number.isFinite(p.value)).map((p) => ({ time: p.time as unknown as Time, value: p.value }))
       );
     }
 
@@ -233,7 +273,7 @@ export const Chart: React.FC<ChartProps> = ({
         (sma20Series || []).filter((p) => Number.isFinite(p.value)).map((p) => ({ time: p.time as unknown as Time, value: p.value }))
       );
     }
-  }, [bars, pSuggestSeries, buyThresholdSeries, sellThresholdSeries, sma20Series]);
+  }, [bars, pSuggestSeries, supportSeries, buyThresholdSeries, resistanceSeries, sellThresholdSeries, sma20Series]);
 
   // 3. Update Markers smoothly
   useEffect(() => {
@@ -263,21 +303,92 @@ export const Chart: React.FC<ChartProps> = ({
     }
   }, [markers, bars, showMarkers]);
 
+  // Metrics for header toolbar
+  const lastBar = bars && bars.length > 0 ? bars[bars.length - 1] : null;
+  const lastPrice = lastBar ? lastBar.close : 0;
+  const lastPSuggest = pSuggestSeries && pSuggestSeries.length > 0 ? pSuggestSeries[pSuggestSeries.length - 1].value : 0;
+  const lastSup = supportSeries && supportSeries.length > 0 ? supportSeries[supportSeries.length - 1].value : (buyThresholdSeries.length > 0 ? buyThresholdSeries[buyThresholdSeries.length - 1].value : 0);
+  const lastBuyTh = buyThresholdSeries && buyThresholdSeries.length > 0 ? buyThresholdSeries[buyThresholdSeries.length - 1].value : 0;
+  const lastRes = resistanceSeries && resistanceSeries.length > 0 ? resistanceSeries[resistanceSeries.length - 1].value : (sellThresholdSeries.length > 0 ? sellThresholdSeries[sellThresholdSeries.length - 1].value : 0);
+  const lastSellTh = sellThresholdSeries && sellThresholdSeries.length > 0 ? sellThresholdSeries[sellThresholdSeries.length - 1].value : 0;
+
   return (
     <div style={{ position: 'relative', width: '100%', background: '#0f172a', borderRadius: '8px', border: '1px solid #1e293b', overflow: 'hidden' }}>
       {/* Top Chart Toolbar & Interactive Indicator Toggles */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', background: '#1e293b', borderBottom: '1px solid #334155', flexWrap: 'wrap', gap: '8px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 700, fontSize: '15px', color: '#f8fafc' }}>{symbol}</span>
           <span style={{ fontSize: '11px', background: '#2563eb', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>1D</span>
           <span style={{ fontSize: '11px', background: '#059669', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>{engine}</span>
+          {lastPrice > 0 && (
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc' }}>
+              Giá: {lastPrice.toLocaleString('vi-VN')}
+            </span>
+          )}
+          {lastPSuggest > 0 && (
+            <span style={{ fontSize: '12px', color: '#38bdf8', fontWeight: 600 }}>
+              P_s: {lastPSuggest.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}
+            </span>
+          )}
+          {lastSup > 0 && (
+            <span style={{ fontSize: '12px', color: '#10b981', fontWeight: 600 }} title="Vùng hỗ trợ [S, S_top]">
+              Hỗ Trợ: [{lastSup.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}, {lastBuyTh.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}]
+            </span>
+          )}
+          {lastRes > 0 && (
+            <span style={{ fontSize: '12px', color: '#f43f5e', fontWeight: 600 }} title="Vùng kháng cự [R_bottom, R]">
+              Kháng Cự: [{lastSellTh.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}, {lastRes.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}]
+            </span>
+          )}
         </div>
 
         {/* Interactive Indicator Layer Toggles */}
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <button
+            onClick={() => setShowSupportZone(!showSupportZone)}
+            title="Bật/Tắt Vùng Hỗ Trợ [S, S+ATR] (Target point gần giá và nhỏ hơn giá)"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: showSupportZone ? 'rgba(16, 185, 129, 0.15)' : 'rgba(30, 41, 59, 0.6)',
+              border: `1px solid ${showSupportZone ? '#10b981' : '#334155'}`,
+              padding: '3px 8px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              color: showSupportZone ? '#10b981' : '#64748b',
+              fontSize: '11px',
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ width: '8px', height: '8px', background: showSupportZone ? '#10b981' : '#475569', borderRadius: '2px', display: 'inline-block' }} />
+            Vùng Hỗ Trợ [S, S_top]
+          </button>
+
+          <button
+            onClick={() => setShowResistanceZone(!showResistanceZone)}
+            title="Bật/Tắt Vùng Kháng Cự [R-ATR, R] (Target point gần giá và lớn hơn giá)"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: showResistanceZone ? 'rgba(244, 63, 94, 0.15)' : 'rgba(30, 41, 59, 0.6)',
+              border: `1px solid ${showResistanceZone ? '#f43f5e' : '#334155'}`,
+              padding: '3px 8px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              color: showResistanceZone ? '#f43f5e' : '#64748b',
+              fontSize: '11px',
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ width: '8px', height: '8px', background: showResistanceZone ? '#f43f5e' : '#475569', borderRadius: '2px', display: 'inline-block' }} />
+            Vùng Kháng Cự [R_bot, R]
+          </button>
+
+          <button
             onClick={() => setShowPSuggest(!showPSuggest)}
-            title="Bật/Tắt đường giá trung bình P_suggest"
+            title="Bật/Tắt đường giá cơ sở P_suggest (0.5 LRC + 0.5 SMA)"
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -294,48 +405,6 @@ export const Chart: React.FC<ChartProps> = ({
           >
             <span style={{ width: '8px', height: '8px', background: showPSuggest ? '#38bdf8' : '#475569', borderRadius: '2px', display: 'inline-block' }} />
             P_suggest
-          </button>
-
-          <button
-            onClick={() => setShowBuyZone(!showBuyZone)}
-            title="Bật/Tắt biên trên Vùng Mua (+1 ATR)"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: showBuyZone ? 'rgba(52, 211, 153, 0.12)' : 'rgba(30, 41, 59, 0.6)',
-              border: `1px solid ${showBuyZone ? 'rgba(52, 211, 153, 0.35)' : '#334155'}`,
-              padding: '3px 8px',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              color: showBuyZone ? '#34d399' : '#64748b',
-              fontSize: '11px',
-              fontWeight: 500,
-            }}
-          >
-            <span style={{ width: '8px', height: '8px', background: showBuyZone ? '#34d399' : '#475569', borderRadius: '2px', display: 'inline-block' }} />
-            Vùng Mua (+1 ATR)
-          </button>
-
-          <button
-            onClick={() => setShowSellZone(!showSellZone)}
-            title="Bật/Tắt biên dưới Vùng Bán (-1 ATR)"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: showSellZone ? 'rgba(251, 113, 133, 0.12)' : 'rgba(30, 41, 59, 0.6)',
-              border: `1px solid ${showSellZone ? 'rgba(251, 113, 133, 0.35)' : '#334155'}`,
-              padding: '3px 8px',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              color: showSellZone ? '#fb7185' : '#64748b',
-              fontSize: '11px',
-              fontWeight: 500,
-            }}
-          >
-            <span style={{ width: '8px', height: '8px', background: showSellZone ? '#fb7185' : '#475569', borderRadius: '2px', display: 'inline-block' }} />
-            Vùng Bán (-1 ATR)
           </button>
 
           <button

@@ -5,6 +5,11 @@ from src.strategies.indicators.candlestick import CandlestickPatternDetector, Ca
 from src.strategies.indicators.dmi import DirectionalMovementIndex
 from src.strategies.indicators.linear import LinearRegressionChannel
 from src.strategies.indicators.sma import RollingStatistics, sigmoid
+from src.strategies.indicators.reversal import (
+    ReversalIndicator,
+    ReversalSnapshot,
+    SupportResistanceReversalIndicator,
+)
 
 __all__ = [
     "CandlestickPatternDetector",
@@ -14,4 +19,7 @@ __all__ = [
     "MultivariateLinearRegression",
     "RollingStatistics",
     "sigmoid",
+    "ReversalIndicator",
+    "ReversalSnapshot",
+    "SupportResistanceReversalIndicator",
 ]

@@ -33,6 +33,9 @@ export interface TradeItem {
   theses_count: number;
   reason: string;
   nav: number;
+  level?: number;
+  pnl?: number;
+  surplus_after?: number;
 }
 
 export interface BacktestSummaryMetrics {
@@ -59,6 +62,8 @@ export interface BacktestRunResponse {
   summary: BacktestSummaryMetrics;
   candles: CandleBar[];
   p_suggest: LinePoint[];
+  support?: LinePoint[];
+  resistance?: LinePoint[];
   buy_threshold: LinePoint[];
   sell_threshold: LinePoint[];
   sma20: LinePoint[];
@@ -69,9 +74,15 @@ export interface BacktestRunResponse {
   pt_series: LinePoint[];
   div_yield_series: LinePoint[];
   theses_count: LinePoint[];
+  loser_ratio?: LinePoint[];
   equity_curve: LinePoint[];
   benchmark_curve: LinePoint[];
   drawdown_curve: LinePoint[];
+  plus_di?: LinePoint[];
+  minus_di?: LinePoint[];
+  adx?: LinePoint[];
+  position_shares?: LinePoint[];
+  position_level?: LinePoint[];
   markers: ChartMarker[];
   trades: TradeItem[];
 }
@@ -84,7 +95,7 @@ export interface BacktestRunRequest {
   base_nav_pct: number;
   lot_size: number;
   window: number;
-  linear_window: number;
+  linear_window?: number | null;
   sma_window: number;
   beta_window: number;
   z_score_window: number;
